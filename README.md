@@ -4,8 +4,6 @@ A small macOS app for running your own certificate authority: TLS certificates f
 
 It is meant for a home lab or a small office, where a public CA is of no use and a full PKI product is too much. If you have used [XCA](https://hohnstaedt.de/xca/) for this, CA for YubiKey does the same job with fewer choices to make and with the CA keys on hardware instead of in a file.
 
-> **Status: before the first release.** Most of it has so far only run against simulated keys and automated tests. On real YubiKeys only parts have been tried, and not yet with the current version of the library that talks to them. Do not put a CA you depend on into it yet.
-
 ## What it does
 
 - **Creates the CA on YubiKeys.** A root CA on one YubiKey, which you keep in a safe, and an issuing CA on a second one for everyday use. One YubiKey alone works too, with the root CA signing everything.
@@ -48,12 +46,16 @@ The keys of the CA are never in it. The private keys of the certificates you iss
 
 ## Requirements
 
-- macOS 13.3 or newer. Developed on Apple silicon; nothing else has been tried.
+- macOS 13.3 or newer, on a Mac with Apple silicon or with Intel. It is developed and tried on Apple silicon; the Intel half has only been run through Rosetta, not on an Intel Mac.
 - One or two YubiKeys of the 5 series. The blue Security Key has no PIV and will not work.
+
+## Installing
+
+Download the disk image from the [latest release](https://github.com/yca-app/yca/releases/latest), open it and drag the app to Applications. The app is signed and notarised by Apple. Each release lists the SHA-256 of its disk image, to compare with what you downloaded.
 
 ## Building from source
 
-There are no downloads yet. To build the app you need Rust 1.90 or newer and a current Node.js.
+To build the app yourself you need Rust 1.90 or newer and a current Node.js.
 
 ```sh
 npm --prefix app install

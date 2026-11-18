@@ -102,6 +102,8 @@ The tests run without a YubiKey, so what only hardware shows has to be tried by 
   arch -x86_64 "/Applications/CA for YubiKey.app/Contents/MacOS/yca" devices
   ```
 
+  The second line runs through Rosetta. On macOS 27 that brings up a notice that the app has a part which will not open in macOS 28. The notice is about Rosetta, which this check uses, and not about the app: opened the usual way on a Mac with Apple silicon, it does not use Rosetta. From macOS 28 on, Rosetta no longer runs it, and the Intel half can be tried only on an Intel Mac.
+
 - Point an MCP client at that command and ask it for a certificate: the window must open with the signing dialog.
 
 If anything fails, fix it and start again from step 2. A version that was published is never built a second time; a fix gets the next version.

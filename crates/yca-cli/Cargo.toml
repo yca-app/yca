@@ -1,0 +1,25 @@
+[package]
+name = "yca-cli"
+description = "CA for YubiKey from a terminal: the yca command and its MCP server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "yca"
+path = "src/main.rs"
+
+[dependencies]
+yca-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+time.workspace = true
+zeroize.workspace = true
+rpassword.workspace = true
+pem.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

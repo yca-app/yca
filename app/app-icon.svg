@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The app icon, dark version: a shield, for the certificate authority,
+  with the touch contact of a hardware key at its heart.
+
+  In the two colours the app itself is made of: its greys, and the green
+  it has for everything that is in order. app-icon-light.svg is the same
+  drawing on a light tile.
+
+  Drawn on the grid macOS icons use: a 1024 canvas with the rounded tile
+  inset by 100 on every side, which leaves room for its shadow.
+
+  The files in src-tauri/icons are made from this one:
+
+      npm run tauri icon app-icon.svg
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#48484a"/>
+      <stop offset="0.45" stop-color="#2c2c2e"/>
+      <stop offset="1" stop-color="#171717"/>
+    </linearGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d4d4d4"/>
+    </linearGradient>
+    <radialGradient id="contact" cx="0.36" cy="0.30" r="0.85">
+      <stop offset="0" stop-color="#6ee7b7"/>
+      <stop offset="0.5" stop-color="#10b981"/>
+      <stop offset="1" stop-color="#047857"/>
+    </radialGradient>
+    <filter id="tileShadow" x="-15%" y="-15%" width="130%" height="135%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000000" flood-opacity="0.32"/>
+    </filter>
+    <filter id="shieldShadow" x="-20%" y="-20%" width="140%" height="145%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#tile)" filter="url(#tileShadow)"/>
+  <!-- A hairline of light along the edge, as a dark tile needs to stand
+       out on a dark desktop. -->
+  <rect x="101.5" y="101.5" width="821" height="821" rx="184.5" fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="3"/>
+
+  <g transform="translate(0 -14)">
+    <path
+      d="M512 236c66 52 142 78 224 84v196c0 146-90 250-224 302-134-52-224-156-224-302V320c82-6 158-32 224-84z"
+      fill="url(#shield)" stroke="url(#shield)" stroke-width="20" stroke-linejoin="round"
+      filter="url(#shieldShadow)"/>
+
+    <!-- The touch contact: a disc with the ring a finger rests in. -->
+    <circle cx="512" cy="506" r="120" fill="url(#contact)"/>
+    <circle cx="512" cy="506" r="117" fill="none" stroke="#065f46" stroke-opacity="0.5" stroke-width="6"/>
+    <circle cx="512" cy="506" r="72" fill="none" stroke="#064e3b" stroke-opacity="0.4" stroke-width="13"/>
+  </g>
+</svg>

@@ -1,0 +1,67 @@
+name: Checks
+
+# The same checks CONTRIBUTING.md asks for before a change is sent. None of
+# them needs a YubiKey. Nothing is signed or released from here: a release
+# is built on the maintainer's Mac, see RELEASING.md.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A run can read the repository and nothing else: no secrets are used, and
+# none of the steps may write back.
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Format, lints, tests and build
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      # Actions are named by commit, so that a moved tag cannot change what
+      # runs here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # The window's files have to be there before the app compiles: they
+      # are built into it.
+      - name: Window
+        run: |
+          npm --prefix app ci
+          npm --prefix app run build
+
+      - name: Lints
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --locked

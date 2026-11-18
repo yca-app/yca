@@ -1,0 +1,46 @@
+[workspace]
+resolver = "3"
+members = ["crates/yca-core", "crates/yca-cli", "app/src-tauri"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.90"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/yca-app/yca"
+
+[workspace.dependencies]
+yca-core = { path = "crates/yca-core" }
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "aws_lc_rs", "pem", "x509-parser"] }
+time = { version = "0.3", features = ["serde-well-known"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+x509-parser = { version = "0.18", features = ["verify-aws"] }
+pem = "4"
+getrandom = { version = "0.4", features = ["sys_rng"] }
+tempfile = "3"
+# A pre-release, for firmware 5.7 and later. Named exactly: a newer pre-release is
+# taken on purpose and tried on hardware, never picked up by an update.
+yubikey = "=0.9.0-rc.0"
+pcsc = "2"
+der = "0.8"
+sha2 = "0.10"
+sha1 = "0.11"
+zeroize = "1"
+rpassword = "7"
+p12-keystore = "0.4"
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4.6", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+
+# Size and speed of the shipped app; see https://tauri.app/concept/size/
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true

@@ -33,6 +33,14 @@ Once, on the Mac that builds releases:
    rustup target add aarch64-apple-darwin x86_64-apple-darwin
    ```
 
+   It has to be the Rust that is found first. Where Homebrew's `rust` is installed as well, its `rustup` stays out of the way, and the release needs it put in front, for example in the file above:
+
+   ```sh
+   export PATH="$(brew --prefix rustup)/bin:$PATH"
+   ```
+
+   The script checks this before it builds anything.
+
 5. **Node.js,** in the version the checks use (see `.github/workflows/checks.yml`).
 
 Once, on GitHub: private vulnerability reporting switched on for the repository, which [SECURITY.md](SECURITY.md) sends people to.
@@ -75,7 +83,7 @@ The script refuses to start if the two versions differ, the changelog has no dat
 
 It ends by naming the disk image, its SHA-256 and the team the signature belongs to. The image is in `target/universal-apple-darwin/release/bundle/dmg`.
 
-`scripts/release.sh --unsigned` builds the app the same way for this Mac only, without signature and disk image. It is for trying the build out, and for whoever builds the app themselves.
+`scripts/release.sh --unsigned` builds the app the same way for this Mac only, without signature and disk image. It is for trying the build out, and for whoever builds the app themselves. With `--universal` after it, it builds for both kinds of Mac, which tries everything a release does short of signing.
 
 ### 4. Try what was built
 

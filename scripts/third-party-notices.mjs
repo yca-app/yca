@@ -5,15 +5,16 @@
 // that the notice travels with every copy, so the file goes into the app
 // bundle and beside the download.
 //
-//   node scripts/third-party-notices.mjs [where to write it]
+//   node scripts/third-party-notices.mjs [where to write it] [target]
 //
-// Without an argument it writes target/THIRD-PARTY-NOTICES.txt. It needs
-// what a build needs and nothing more: `cargo` with the dependencies
-// fetched, and `npm --prefix app install` done.
+// Without arguments it writes target/THIRD-PARTY-NOTICES.txt for what a
+// release is built for, aarch64-apple-darwin. It needs what a build needs
+// and nothing more: `cargo` with the dependencies fetched, and
+// `npm --prefix app install` done.
 //
 // What is listed is what is shipped, not what is installed. For Rust that
-// is what the two programs depend on in order to run on a Mac, of either
-// kind of processor, leaving out what only builds or tests them. For the
+// is what the two programs depend on in order to run on the target, leaving
+// out what only builds or tests them. For the
 // window it is the modules the bundler put into the bundle, which it is
 // asked for, and the packages the style sheet imports.
 
@@ -30,7 +31,7 @@ const output = resolve(process.argv[2] ?? join(root, "target", "THIRD-PARTY-NOTI
 /** The programs a release hands out. */
 const shipped = ["yca-app", "yca-cli"];
 /** What they are built for. */
-const targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
+const target = process.argv[3] ?? "aarch64-apple-darwin";
 
 /** A file that states a licence or a notice, by its name. */
 const stated = /^(licen[sc]e|copying|notice|unlicense|copyright)([-_. ].*)?$/i;
@@ -59,46 +60,43 @@ function licenceFiles(folder) {
 
 /** The crates the shipped programs run on, with the project's own left out. */
 function crates() {
-  const found = new Map();
-  let version = "";
-  for (const target of targets) {
-    const metadata = JSON.parse(
-      execFileSync(
-        "cargo",
-        ["metadata", "--format-version", "1", "--locked", "--filter-platform", target],
-        { cwd: root, encoding: "utf8", maxBuffer: 1 << 28 },
-      ),
-    );
-    const packages = new Map(metadata.packages.map((each) => [each.id, each]));
-    const nodes = new Map(metadata.resolve.nodes.map((each) => [each.id, each]));
-    const todo = metadata.workspace_members.filter((id) => shipped.includes(packages.get(id).name));
-    if (todo.length !== shipped.length) {
-      throw new Error(`the workspace does not have all of: ${shipped.join(", ")}`);
-    }
-    version = packages.get(todo[0]).version;
-    const seen = new Set();
-    while (todo.length > 0) {
-      const id = todo.pop();
-      if (seen.has(id)) continue;
-      seen.add(id);
-      for (const dependency of nodes.get(id).deps) {
-        // What a program needs to run. What builds or tests it is not in it.
-        if (dependency.dep_kinds.some((kind) => kind.kind === null)) todo.push(dependency.pkg);
-      }
-    }
-    for (const id of seen) {
-      const each = packages.get(id);
-      if (each.source === null) continue;
-      found.set(`${each.name} ${each.version}`, {
-        name: each.name,
-        version: each.version,
-        licence: each.license ?? null,
-        home: each.repository ?? each.homepage ?? `https://crates.io/crates/${each.name}`,
-        files: licenceFiles(dirname(each.manifest_path)),
-      });
+  const metadata = JSON.parse(
+    execFileSync(
+      "cargo",
+      ["metadata", "--format-version", "1", "--locked", "--filter-platform", target],
+      { cwd: root, encoding: "utf8", maxBuffer: 1 << 28 },
+    ),
+  );
+  const packages = new Map(metadata.packages.map((each) => [each.id, each]));
+  const nodes = new Map(metadata.resolve.nodes.map((each) => [each.id, each]));
+  const todo = metadata.workspace_members.filter((id) => shipped.includes(packages.get(id).name));
+  if (todo.length !== shipped.length) {
+    throw new Error(`the workspace does not have all of: ${shipped.join(", ")}`);
+  }
+  const version = packages.get(todo[0]).version;
+  const seen = new Set();
+  while (todo.length > 0) {
+    const id = todo.pop();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    for (const dependency of nodes.get(id).deps) {
+      // What a program needs to run. What builds or tests it is not in it.
+      if (dependency.dep_kinds.some((kind) => kind.kind === null)) todo.push(dependency.pkg);
     }
   }
-  return { version, crates: sorted([...found.values()]) };
+  const found = [];
+  for (const id of seen) {
+    const each = packages.get(id);
+    if (each.source === null) continue;
+    found.push({
+      name: each.name,
+      version: each.version,
+      licence: each.license ?? null,
+      home: each.repository ?? each.homepage ?? `https://crates.io/crates/${each.name}`,
+      files: licenceFiles(dirname(each.manifest_path)),
+    });
+  }
+  return { version, crates: sorted(found) };
 }
 
 /** The package a module of the bundle comes from, as its folder; nothing

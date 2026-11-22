@@ -4,7 +4,7 @@ What changed in each release, written for the people who use the app. The format
 
 ## 1.0.0 (2026-11-18)
 
-The first release.
+The first release, for Macs with Apple silicon and macOS 13.3 or newer.
 
 ### Added
 

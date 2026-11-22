@@ -46,7 +46,7 @@ The keys of the CA are never in it. The private keys of the certificates you iss
 
 ## Requirements
 
-- macOS 13.3 or newer, on a Mac with Apple silicon or with Intel. It is developed and tried on Apple silicon; the Intel half has only been run through Rosetta, not on an Intel Mac.
+- A Mac with Apple silicon and macOS 13.3 or newer. The released app does not run on a Mac with Intel; built from source it may, but that has not been tried.
 - One or two YubiKeys of the 5 series. The blue Security Key has no PIV and will not work.
 
 ## Installing

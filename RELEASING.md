@@ -2,7 +2,9 @@
 
 How a release of CA for YubiKey is made. It is built by hand on the maintainer's Mac: the signing key stays there, and nothing in the repository or in its automated checks can sign or publish anything.
 
-A release is one disk image with the app in it. The app is built for both kinds of Mac (Apple silicon and Intel), signed with a Developer ID, notarised by Apple, and carries the `yca` command, the licence and the notices of the software it is built from.
+A release is one disk image with the app in it. The app is built for Macs with Apple silicon, signed with a Developer ID, notarised by Apple, and carries the `yca` command, the licence and the notices of the software it is built from.
+
+It carries no code for Intel. On a Mac with Apple silicon such code would run through Rosetta, which macOS 27 warns about with a notice naming the app and macOS 28 no longer offers. A program that itself runs through Rosetta and starts the `yca` command would get that code, so it is left out altogether.
 
 ## What has to be in place
 
@@ -27,16 +29,10 @@ Once, on the Mac that builds releases:
 
    With an Apple ID it sets `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` instead of the three `APPLE_API_` lines.
 
-4. **Rust from rustup, with both targets.** A Rust installed another way builds only for the Mac it runs on.
+4. **Rust,** 1.90 or newer. On a Mac with Apple silicon any Rust builds the release as it is. On an Intel Mac it has to be a Rust from rustup, found first, with the target added:
 
    ```sh
-   rustup target add aarch64-apple-darwin x86_64-apple-darwin
-   ```
-
-   It has to be the Rust that is found first. Where Homebrew's `rust` is installed as well, its `rustup` stays out of the way, and the release needs it put in front, for example in the file above:
-
-   ```sh
-   export PATH="$(brew --prefix rustup)/bin:$PATH"
+   rustup target add aarch64-apple-darwin
    ```
 
    The script checks this before it builds anything.
@@ -79,11 +75,11 @@ npm --prefix app ci
 scripts/release.sh
 ```
 
-The script refuses to start if the two versions differ, the changelog has no dated entry, the working tree has changes, or the signing identity or the notarisation credentials are missing. Then it builds the `yca` command for both kinds of Mac, writes the third-party notices, builds, signs and notarises the app, and checks the result: that the app carries the command in the right version, the licence and the notices, that every program in it runs on both kinds of Mac, that the signature holds all the way down, and that the app and the disk image both have Apple's ticket attached and pass Gatekeeper.
+The script refuses to start if the two versions differ, the changelog has no dated entry, the working tree has changes, or the signing identity or the notarisation credentials are missing. Then it builds the `yca` command, writes the third-party notices, builds, signs and notarises the app, and checks the result: that the app carries the command in the right version, the licence and the notices, that every program in it is built for Apple silicon and nothing else, that the signature holds all the way down, and that the app and the disk image both have Apple's ticket attached and pass Gatekeeper.
 
-It ends by naming the disk image, its SHA-256 and the team the signature belongs to. The image is in `target/universal-apple-darwin/release/bundle/dmg`.
+It ends by naming the disk image, its SHA-256 and the team the signature belongs to. The image is in `target/aarch64-apple-darwin/release/bundle/dmg`.
 
-`scripts/release.sh --unsigned` builds the app the same way for this Mac only, without signature and disk image. It is for trying the build out, and for whoever builds the app themselves. With `--universal` after it, it builds for both kinds of Mac, which tries everything a release does short of signing.
+`scripts/release.sh --unsigned` builds the app the same way for the Mac it runs on, without signature and disk image. It is for trying the build out, and for whoever builds the app themselves.
 
 ### 4. Try what was built
 
@@ -95,14 +91,11 @@ The tests run without a YubiKey, so what only hardware shows has to be tried by 
 - Renew a certificate, revoke one, and sign the revocation list.
 - Replace the issuing CA.
 - Change a PIN, set a new one with the PUK, and reset a YubiKey you can afford to reset.
-- Run the command from inside the app, also as an Intel Mac would:
+- Run the command from inside the app:
 
   ```sh
   "/Applications/CA for YubiKey.app/Contents/MacOS/yca" devices
-  arch -x86_64 "/Applications/CA for YubiKey.app/Contents/MacOS/yca" devices
   ```
-
-  The second line runs through Rosetta. On macOS 27 that brings up a notice that the app has a part which will not open in macOS 28. The notice is about Rosetta, which this check uses, and not about the app: opened the usual way on a Mac with Apple silicon, it does not use Rosetta. From macOS 28 on, Rosetta no longer runs it, and the Intel half can be tried only on an Intel Mac.
 
 - Point an MCP client at that command and ask it for a certificate: the window must open with the signing dialog.
 
@@ -115,6 +108,6 @@ git tag -a v1.0.0 -m "CA for YubiKey 1.0.0"
 git push origin main v1.0.0
 ```
 
-On GitHub, make a release from the tag with the changelog entry as its text, and attach the disk image, a file with its SHA-256, and `THIRD-PARTY-NOTICES.txt` from `target/release-parts`.
+On GitHub, make a release from the tag with the changelog entry as its text, and attach the disk image, a file with its SHA-256, and `THIRD-PARTY-NOTICES.txt` from `target/release-parts`. Give the image a name without spaces, such as `CA-for-YubiKey-1.0.0.dmg`, and write that name into the checksum file: GitHub turns spaces in the name of an attached file into dots, and the file would no longer match.
 
 Afterwards, see that the README tells people where to download it and no longer says what has not been tried.

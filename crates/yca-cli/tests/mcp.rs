@@ -440,16 +440,28 @@ fn a_person_who_takes_their_time_is_waited_for() {
         "initialize",
         json!({ "protocolVersion": "2025-06-18", "clientInfo": { "name": "Test Agent" } }),
     );
+    let asked = std::time::Instant::now();
     let (failed, mut said) = agent.call(
         "sign_revocation_list",
         json!({ "workspace": folder, "ca": "issuing" }),
     );
     assert!(!failed, "{said}");
-    // The first answer is not the last: the person has not got to it yet.
-    assert_eq!(said["state"], "waiting");
+    // The person has something else open: the agent is told so at once,
+    // to tell them, and does not wait out a whole call first.
+    assert_eq!(said["state"], "queued");
+    assert!(
+        said["message"]
+            .as_str()
+            .unwrap()
+            .contains("something else open"),
+        "{said}"
+    );
+    assert!(asked.elapsed() < std::time::Duration::from_millis(300));
     let id = said["request_id"].as_str().unwrap().to_owned();
     let mut waits = 0;
-    while said["state"] == "waiting" {
+    let mut shown = false;
+    while said["state"] == "queued" || said["state"] == "waiting" {
+        shown |= said["state"] == "waiting";
         waits += 1;
         assert!(waits < 50, "{said}");
         let (failed, next) = agent.call("wait_for_request", json!({ "request_id": id }));
@@ -457,6 +469,7 @@ fn a_person_who_takes_their_time_is_waited_for() {
         said = next;
     }
     assert!(waits >= 2, "waited {waits} times");
+    assert!(shown, "the agent was never told the dialog is up");
     assert_eq!(said["state"], "done");
     assert_eq!(said["result"]["number"], 3);
     window.join().unwrap();

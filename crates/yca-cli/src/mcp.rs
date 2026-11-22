@@ -72,9 +72,11 @@ the CA for YubiKey app with what you asked for. The person checks it, types \
 the PIN of the YubiKey and touches the key. Tell them to look at the app's \
 window and their YubiKey. If they have not finished when the call returns, \
 you get state \"waiting\" and a request_id: call wait_for_request with it. \
-The person is never interrupted: if they are in the middle of something in \
-the window, your request waits its turn there, and you wait the same way. \
-Nothing needs the person as long as you only read, sort or revoke.
+The person is never interrupted: if they have something else open in the \
+window, your request waits behind it and you get state \"queued\" at once. \
+Then tell them that a dialog of yours is waiting until they finish or close \
+what they have open, and wait the same way. Nothing needs the person as long \
+as you only read, sort or revoke.
 
 Never ask for a PIN, PUK or password, and never offer to enter one: you \
 cannot, and the person should not tell you. A revoked certificate is refused \
@@ -109,8 +111,9 @@ struct Server {
     /// What the program at the other end calls itself; what the person is
     /// shown as the one who asks.
     client: Option<String>,
-    /// Requests that are with the person at the window, by their id.
-    waiting: HashMap<String, Desk>,
+    /// Requests that are with the person at the window, by their id, with
+    /// what the window last said of them.
+    waiting: HashMap<String, (Desk, Heard)>,
     /// How many requests were handed over, to tell them apart.
     handed: u64,
 }
@@ -336,10 +339,10 @@ impl Server {
             }
             "wait_for_request" => {
                 let id = text(arguments, "request_id")?;
-                let desk = self.waiting.remove(&id).ok_or_else(|| {
+                let (desk, heard) = self.waiting.remove(&id).ok_or_else(|| {
                     anyhow!("no request {id} is waiting; it has ended or was never made")
                 })?;
-                self.settle(id, desk, true)
+                self.settle(id, desk, heard)
             }
             other => bail!("yca has no tool called {other}"),
         }
@@ -366,13 +369,17 @@ impl Server {
             ask,
         };
         let desk = reach_the_app(&request)?;
-        self.settle(id, desk, false)
+        self.settle(id, desk, Heard::Nothing)
     }
 
     /// Waits for the person, for as long as one call may take, and says
-    /// where things stand. `taken` says whether the window has said
-    /// before that it has the request.
-    fn settle(&mut self, id: String, mut desk: Desk, mut taken: bool) -> Result<Value> {
+    /// where things stand. `heard` is what the window said of the request
+    /// before.
+    ///
+    /// A request that has to wait behind something the person has open is
+    /// said at once: the person is not looking for a dialog that does not
+    /// come, and only the agent can tell them why.
+    fn settle(&mut self, id: String, mut desk: Desk, mut heard: Heard) -> Result<Value> {
         let started = Instant::now();
         let patience = patience();
         loop {
@@ -383,9 +390,14 @@ impl Server {
                 desk.wait(left)?
             };
             match reply {
-                // Waiting its turn or before the person's eyes: either
-                // way it is with the window now.
-                Some(Reply::Queued) | Some(Reply::Shown) => taken = true,
+                Some(Reply::Queued) => {
+                    let told = heard == Heard::Queued;
+                    heard = Heard::Queued;
+                    if !told {
+                        return Ok(self.not_yet(id, desk, heard));
+                    }
+                }
+                Some(Reply::Shown) => heard = Heard::Shown,
                 Some(Reply::Done { result }) => {
                     return Ok(json!({ "state": "done", "result": result }));
                 }
@@ -397,23 +409,48 @@ impl Server {
                     }));
                 }
                 Some(Reply::Failed { message }) => bail!(message),
-                None if taken => {
-                    self.waiting.insert(id.clone(), desk);
-                    return Ok(json!({
-                        "state": "waiting",
-                        "request_id": id,
-                        "message": "The request is with the app's window and the person has not \
-                                    finished; if they were in the middle of something else, it \
-                                    is shown as soon as they are done. Tell them to look at the \
-                                    CA for YubiKey window and their YubiKey, then call \
-                                    wait_for_request with this request_id. If you stop waiting, \
-                                    the request is taken back.",
-                    }));
-                }
+                None if heard != Heard::Nothing => return Ok(self.not_yet(id, desk, heard)),
                 None => bail!("the app took the request and said nothing about it; ask again"),
             }
         }
     }
+
+    /// Keeps a request the person has not finished, and tells the agent
+    /// where it is.
+    fn not_yet(&mut self, id: String, desk: Desk, heard: Heard) -> Value {
+        self.waiting.insert(id.clone(), (desk, heard));
+        if heard == Heard::Queued {
+            json!({
+                "state": "queued",
+                "request_id": id,
+                "message": "The person has something else open in the CA for YubiKey window, \
+                            and your request waits behind it: it is shown there as soon as they \
+                            finish or close what they have open. Tell them so now, then call \
+                            wait_for_request with this request_id. If you stop waiting, the \
+                            request is taken back.",
+            })
+        } else {
+            json!({
+                "state": "waiting",
+                "request_id": id,
+                "message": "The dialog is open in the CA for YubiKey window and the person has \
+                            not finished. Tell them to look at it and at their YubiKey, then call \
+                            wait_for_request with this request_id. If you stop waiting, the \
+                            request is taken back.",
+            })
+        }
+    }
+}
+
+/// What the window has said of a request so far.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Heard {
+    /// Nothing yet.
+    Nothing,
+    /// It waits behind something the person has open.
+    Queued,
+    /// The dialog is up.
+    Shown,
 }
 
 /// Reaches the app with a request, starting the app if it is not running.

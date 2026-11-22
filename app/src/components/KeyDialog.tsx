@@ -122,7 +122,7 @@ export function KeyDialog({ open, onOpenChange, device, task, workspaceRole, onD
     <Dialog open={open} onOpenChange={(next) => !busy && onOpenChange(next)}>
       {/* A click beside the dialog does not throw away what was typed. */}
       <DialogContent
-        className="sm:max-w-[30rem]"
+        className="sm:max-w-[calc(30rem+6px)]"
         showCloseButton={!busy}
         onInteractOutside={(event) => event.preventDefault()}
       >

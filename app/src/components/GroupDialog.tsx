@@ -82,7 +82,7 @@ export function GroupDialog({ open, onOpenChange, certificates, groups, path, on
     <Dialog open={open} onOpenChange={(next) => !busy && onOpenChange(next)}>
       {/* A click beside the dialog does not throw away what was typed. */}
       <DialogContent
-        className="sm:max-w-[28rem]"
+        className="sm:max-w-[calc(28rem+6px)]"
         showCloseButton={!busy}
         onInteractOutside={(event) => event.preventDefault()}
       >

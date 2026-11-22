@@ -490,7 +490,7 @@ export function SigningDialog({
     >
       <DialogContent
         // Taller than a small window once the options are unfolded.
-        className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-[34rem]"
+        className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-[calc(34rem+6px)]"
         showCloseButton={!busy}
         onInteractOutside={(event) => event.preventDefault()}
       >

@@ -92,7 +92,7 @@ export function ConfirmDialog({ open, onOpenChange, asked, onDone }: Props) {
           meant yes, or the red button for one who was typing elsewhere
           when a program's question came up. */}
       <DialogContent
-        className="sm:max-w-[28rem]"
+        className="sm:max-w-[calc(28rem+6px)]"
         onInteractOutside={(event) => event.preventDefault()}
         onOpenAutoFocus={(event) => {
           event.preventDefault();

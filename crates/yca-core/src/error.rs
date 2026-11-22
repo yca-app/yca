@@ -26,6 +26,10 @@ pub enum Error {
     #[error("{0}")]
     InvalidRequest(String),
 
+    /// The password given for a `.p12` file does not open it.
+    #[error("the password does not open the .p12 file")]
+    WrongP12Password,
+
     /// Talking to a YubiKey failed.
     #[error("YubiKey error: {0}")]
     Device(String),

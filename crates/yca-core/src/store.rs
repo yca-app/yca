@@ -62,11 +62,11 @@ use crate::authority::encode_pem;
 use crate::device::CaRole;
 use crate::export::{
     CERTIFICATE_FILE, ExportForm, ExportSource, FULLCHAIN_FILE, INTERMEDIATE_FILE, KEY_FILE,
-    P12_FILE, P12Encryption, P12Options, export, key_from_p12,
+    P12_FILE, P12Encryption, P12Options, export, key_from_p12, p12_encryption,
 };
 use crate::{
-    Attestation, Error, ExportFile, IssuedCertificate, LeafProfile, LeafRequest, RevocationList,
-    Revoked,
+    Attestation, Error, ExportFile, IssuedCertificate, KeyPair, LeafProfile, LeafRequest,
+    PublicKeyData, RevocationList, Revoked,
 };
 
 const META_FILE: &str = "ca.toml";
@@ -348,6 +348,37 @@ pub struct Repacked {
     pub files: Vec<ExportFile>,
 }
 
+/// What the folder of a renewed certificate is written from: the form the
+/// files of the certificate it replaces are in, and their private key
+/// where the workspace has it. A renewal keeps the key, so the new folder
+/// holds everything the old one did, and stays complete whatever becomes
+/// of the old certificate.
+pub struct Renewal {
+    form: ExportForm,
+    key: Option<Zeroizing<Vec<u8>>>,
+    /// For a `.p12` file: its password and how it is encrypted, which the
+    /// new file gets too.
+    p12: Option<(Zeroizing<String>, P12Encryption)>,
+}
+
+impl Renewal {
+    /// The files of the renewed certificate.
+    pub fn files(&self, issued: &IssuedCertificate, label: &str) -> Result<Vec<ExportFile>, Error> {
+        export(
+            self.form,
+            ExportSource {
+                issued,
+                private_key_der: self.key.as_ref().map(|key| key.as_slice()),
+            },
+            self.p12.as_ref().map(|(password, encryption)| P12Options {
+                password,
+                encryption: *encryption,
+                label,
+            }),
+        )
+    }
+}
+
 impl Drop for CertificateFolder {
     fn drop(&mut self) {
         if self.recorded.get() {
@@ -582,6 +613,16 @@ impl Store {
                     &format!("{RETIRED_DIR}/issuing-{name}.pem"),
                     &encode_pem(&previous_der),
                 )?;
+                // Its last revocation list goes with it. Left where it was,
+                // it would be taken for the new CA's, and handed to devices
+                // that need a list of the new one.
+                for form in ["crl.pem", "crl"] {
+                    let list = self.dir.join(CRL_DIR).join(format!("issuing.{form}"));
+                    if list.is_file() {
+                        let kept = dir.join(format!("issuing-{name}.{form}"));
+                        fs::rename(&list, &kept).map_err(|e| io_error(&list, e))?;
+                    }
+                }
                 let serial = serial_number(&previous);
                 if !self.meta.retired.iter().any(|ca| ca.serial == serial) {
                     self.meta.retired.push(RetiredCa {
@@ -951,6 +992,45 @@ impl Store {
             folder: path,
             files,
         })
+    }
+
+    /// What a renewal of a certificate writes its files from, read before
+    /// the YubiKey signs: a wrong password for a `.p12` file, which the
+    /// key is inside of, then costs nothing. `opens` is that password; it
+    /// is needed only where the folder holds a `.p12` file.
+    ///
+    /// A key in the folder that does not belong to the certificate is
+    /// refused rather than handed out with a certificate it cannot be used
+    /// with.
+    pub fn renewal(&self, old: &Record, opens: Option<&str>) -> Result<Renewal, Error> {
+        let folder = self.folder_of(old);
+        let key = self.key_in(&folder, opens)?;
+        if let Some(key) = &key {
+            let der = self.certificate_der(old)?;
+            let certificate = parse(&der)?;
+            let belongs = KeyPair::try_from(key.as_slice()).is_ok_and(|key| {
+                certificate.public_key().raw == key.subject_public_key_info().as_slice()
+            });
+            if !belongs {
+                return Err(Error::Store(format!(
+                    "the private key in the folder of certificate {} does not belong to it",
+                    old.serial
+                )));
+            }
+        }
+        let form = self.form(old).unwrap_or_default();
+        let p12 = match (form, opens) {
+            (ExportForm::Pkcs12, Some(password)) => {
+                let sealed = folder.join(P12_FILE);
+                let contents = fs::read(&sealed).map_err(|e| io_error(&sealed, e))?;
+                Some((
+                    Zeroizing::new(password.to_owned()),
+                    p12_encryption(&contents),
+                ))
+            }
+            _ => None,
+        };
+        Ok(Renewal { form, key, p12 })
     }
 
     /// Puts a certificate among the register's own copies.
@@ -1447,17 +1527,24 @@ impl Store {
     /// current, and how many revoked certificates it does not name yet.
     pub fn crl_status(&self, role: CaRole, now: OffsetDateTime) -> Result<CrlStatus, Error> {
         let revoked = self.revoked(role, now);
+        let none = CrlStatus {
+            number: None,
+            next_update: None,
+            unlisted: revoked.len(),
+        };
         let path = self.dir.join(crl_file(role));
         if !path.exists() {
-            return Ok(CrlStatus {
-                number: None,
-                next_update: None,
-                unlisted: revoked.len(),
-            });
+            return Ok(none);
         }
         let der = read_pem(&path)?;
         let (_, list) = CertificateRevocationList::from_der(&der)
             .map_err(|e| Error::Store(format!("could not read {}: {e}", path.display())))?;
+        // Only a list this CA signed is its list: one a replaced issuing CA
+        // left behind is not.
+        let ca_der = self.ca_certificate_der(role)?;
+        if list.verify_signature(parse(&ca_der)?.public_key()).is_err() {
+            return Ok(none);
+        }
         let listed: Vec<String> = list
             .iter_revoked_certificates()
             .map(|entry| {

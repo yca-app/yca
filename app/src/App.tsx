@@ -1062,8 +1062,9 @@ function whatDeletingMeans(certificate: Certificate): string {
 
 /**
  * What has to be said about the revocation lists: a CA whose list does not
- * name everything revoked, or whose list is about to run out. A device
- * refuses a revoked certificate only once it has a list that names it.
+ * name everything revoked, one that has signed certificates but no list
+ * yet, or one whose list is about to run out. A device refuses a revoked
+ * certificate only once it has a list that names it.
  */
 function listNotices(pki: Pki): { role: CaRole; text: string; hint: string }[] {
   const soon = 30 * 24 * 60 * 60 * 1000;
@@ -1071,10 +1072,20 @@ function listNotices(pki: Pki): { role: CaRole; text: string; hint: string }[] {
   for (const role of ["issuing", "root"] as const) {
     const ca = role === "root" ? pki.root : pki.issuing;
     if (!ca) continue;
-    const { unlisted, nextUpdate } = ca.revocation;
+    const { unlisted, nextUpdate, number } = ca.revocation;
     const name = t.roleInText[role];
+    // What a device that checks lists would refuse while the CA has none:
+    // the certificates it signed that are still in use, and for the root
+    // the issuing CA, through which every other one hangs on it.
+    const signedSome =
+      (role === "root" && pki.issuing !== null) ||
+      pki.certificates.some(
+        (c) => c.issuedBy === role && c.issuer === "current" && c.status !== "expired",
+      );
     if (unlisted > 0) {
       notices.push({ role, text: t.unlisted(unlisted, name), hint: t.unlistedHint(unlisted) });
+    } else if (number === null && signedSome) {
+      notices.push({ role, text: t.listMissing(name), hint: t.listMissingHint });
     } else if (nextUpdate && new Date(nextUpdate).getTime() - Date.now() < soon) {
       const date = formatDate(nextUpdate);
       const over = new Date(nextUpdate).getTime() < Date.now();

@@ -25,7 +25,7 @@ pub use csr::SigningRequest;
 pub use error::Error;
 pub use export::{
     CERTIFICATE_FILE, ExportFile, ExportForm, ExportSource, FULLCHAIN_FILE, INTERMEDIATE_FILE,
-    KEY_FILE, P12_FILE, P12Encryption, P12Options, export, key_from_p12,
+    KEY_FILE, P12_FILE, P12Encryption, P12Options, export, key_from_p12, p12_encryption,
 };
 pub use profile::{LeafProfile, LeafRequest};
 pub use rcgen::{
@@ -39,6 +39,6 @@ pub use setup::{
 };
 pub use signer::YubiKeySigner;
 pub use store::{
-    CaEntry, CertificateFolder, CrlStatus, Deleted, Fingerprints, Record, Repack, Repacked,
-    RetiredCa, Status, Store,
+    CaEntry, CertificateFolder, CrlStatus, Deleted, Fingerprints, Record, Renewal, Repack,
+    Repacked, RetiredCa, Status, Store,
 };

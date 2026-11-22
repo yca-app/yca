@@ -446,6 +446,8 @@ export const t = {
   revokeOldHint: "Otherwise the old one stays valid until it expires.",
   renewDoneNote:
     "The private key did not change. Only the new certificate has to be installed on the device.",
+  // Where the old certificate's key is inside its .p12 file.
+  renewOpensHint: "The private key is inside that file. The new file opens with the same password.",
   revokeTitle: "Revoke this certificate?",
   revokeBody:
     "A revoked certificate cannot be made valid again. Devices learn of it only from the revocation list, which you sign afterwards.",
@@ -481,6 +483,10 @@ export const t = {
   listExpired: (role: string, date: string) =>
     `The revocation list of the ${role} ran out on ${date}.`,
   listExpiresHint: "Devices that check it need a new one by then.",
+  // A CA that has signed certificates but no list yet: new, or put in
+  // place of a replaced issuing CA.
+  listMissing: (role: string) => `The ${role} has not signed a revocation list yet.`,
+  listMissingHint: "Devices that check one refuse its certificates without it.",
   signList: "Sign revocation list…",
   listTitle: "Sign revocation list",
   listAbout: (role: string) =>
@@ -640,6 +646,7 @@ export const t = {
       "The PUK is locked as well. Only resetting the YubiKey is left, which destroys what is on it.",
     notTouched: "The YubiKey was not touched in time. Try again.",
     keyMissing: "The YubiKey that has to sign is not connected.",
+    wrongPassword: "The password does not open the file. Nothing was signed.",
     interrupted: (cause: string) =>
       `A new key was made on the YubiKey, but the CA was not finished: ${cause}. Try again; the unfinished key will be replaced.`,
   },

@@ -11,7 +11,7 @@ It is meant for a home lab or a small office, where a public CA is of no use and
 - **Issues certificates by what they are for:** a web server, a VPN gateway, a VPN client, a TLS client.
 - **Hands them over as the files the device's upload form asks for,** and nothing else to pick from: `fullchain.crt` and `private-key.key` for a form with a field for the certificate and one for the key; `certificate.crt`, `intermediate-ca.crt` and `private-key.key` for one with a field each; one password-protected `certificate.p12` for a form with a single file, and for laptops and phones. If the form turns out to ask for something else, the files are written again in the other form without issuing anything.
 - **Signs a device's own request (CSR)** when the device keeps its private key.
-- **Renews, changes names, revokes.** A renewed certificate keeps the device's key, so only the certificate has to be installed again.
+- **Renews, changes names, revokes.** A renewed certificate keeps the device's key, so only the certificate has to be installed again. Its folder has the key too, in the same form of files as before, so it is complete on its own.
 - **Signs revocation lists (CRL)** and tells you when one is due.
 - **Keeps many certificates in order.** Sort them into groups of your own, by customer or site, filter by group, kind and status, sort by any column, and move several at once.
 - **Works with AI agents.** An agent can look at a workspace, sort it and revoke by itself, through `yca mcp`. Whatever needs a signature it hands to the app's window, where you check it, type the PIN and touch the key. No agent is ever given a PIN.

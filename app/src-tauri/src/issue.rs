@@ -122,6 +122,8 @@ pub enum Failure {
     NotTouched,
     /// The YubiKey with the CA that has to sign is not connected.
     KeyMissing { role: &'static str },
+    /// The password does not open the `.p12` file a private key is in.
+    WrongPassword,
     /// A new CA key was generated, replacing what the slot held, but the
     /// CA was not finished. Trying again has to replace that key.
     Interrupted { message: String },
@@ -140,6 +142,7 @@ impl From<Error> for Failure {
             Error::WrongPuk { attempts_left } => Failure::WrongPuk { attempts_left },
             Error::PukLocked => Failure::PukLocked,
             Error::NotTouched => Failure::NotTouched,
+            Error::WrongP12Password => Failure::WrongPassword,
             Error::SetupInterrupted(cause) => Failure::Interrupted {
                 message: cause.to_string(),
             },

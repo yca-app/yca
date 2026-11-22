@@ -169,14 +169,36 @@ pub fn export(
 /// Takes the private key out of a `.p12` file, in PKCS#8 form. For packing
 /// a certificate anew whose key is nowhere else.
 pub fn key_from_p12(contents: &[u8], password: &str) -> Result<Zeroizing<Vec<u8>>, Error> {
-    let keystore =
-        KeyStore::from_pkcs12(contents, password, Pkcs12ImportPolicy::Relaxed).map_err(|_| {
-            Error::InvalidRequest("the password does not open the .p12 file".to_owned())
-        })?;
+    let keystore = KeyStore::from_pkcs12(contents, password, Pkcs12ImportPolicy::Relaxed)
+        .map_err(|_| Error::WrongP12Password)?;
     let (_, chain) = keystore
         .private_key_chain()
         .ok_or_else(|| Error::Export("the .p12 file holds no private key".to_owned()))?;
     Ok(Zeroizing::new(chain.key().as_der().to_vec()))
+}
+
+/// How a `.p12` file is encrypted, told by the digest of its MAC: yca
+/// protects a file for older systems with SHA-1 and any other with
+/// SHA-256. A file that cannot be read that way is taken for a current
+/// one.
+pub fn p12_encryption(contents: &[u8]) -> P12Encryption {
+    use x509_parser::der_parser::parse_der;
+    use x509_parser::oid_registry::OID_HASH_SHA1;
+
+    // PFX: version, the contents, and the MAC; the MAC's first part names
+    // its digest algorithm.
+    let digest = parse_der(contents).ok().and_then(|(_, pfx)| {
+        let pfx = pfx.as_sequence().ok()?;
+        let mac = pfx.get(2)?.as_sequence().ok()?;
+        let digest_info = mac.first()?.as_sequence().ok()?;
+        let algorithm = digest_info.first()?.as_sequence().ok()?;
+        algorithm.first()?.as_oid().ok().cloned()
+    });
+    if digest == Some(OID_HASH_SHA1) {
+        P12Encryption::Compatible
+    } else {
+        P12Encryption::Modern
+    }
 }
 
 fn public(name: &str, pem: String, purpose: &'static str) -> ExportFile {

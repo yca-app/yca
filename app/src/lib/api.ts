@@ -266,6 +266,9 @@ export interface ReissueRequest {
   revokeOld: boolean;
   /** Expire after this many days; `null` for as late as possible. */
   days: number | null;
+  /** The password of the `.p12` file the old certificate is in, where it
+   *  is in one; the new file gets the same password. */
+  opens: string | null;
   pin: string;
 }
 
@@ -295,6 +298,8 @@ export type Failure =
   | { kind: "puk-locked" }
   | { kind: "not-touched" }
   | { kind: "key-missing"; role: CaRole }
+  /** The password does not open the `.p12` file the private key is in. */
+  | { kind: "wrong-password" }
   /** A new CA key was made but the CA not finished; retrying replaces it. */
   | { kind: "interrupted"; message: string }
   | { kind: "other"; message: string };
@@ -870,8 +875,13 @@ const sample = {
     };
   },
   reissue: async (request: ReissueRequest, onTouch: () => void): Promise<Issued> => {
-    await pretendKey(request.pin, onTouch);
     const old = register().find((c) => c.serial === request.serial)!;
+    // The pretend .p12 opens with anything but "wrong", and is tried
+    // before the YubiKey, as in the app.
+    if (old.form === "p12" && old.hasKey && request.opens === "wrong") {
+      throw { kind: "wrong-password" } satisfies Failure;
+    }
+    await pretendKey(request.pin, onTouch);
     const names = request.names.length > 0 ? request.names : old.names;
     const expiresIn = sampleValidity(old.profile, request.days);
     const serial = Math.random().toString(16).slice(2, 10);
@@ -880,8 +890,8 @@ const sample = {
         issuedBy: old.issuedBy,
         replaces: old.serial,
         group: old.group,
-        form: old.form === "separate" ? "separate" : "fullchain",
-        hasKey: false,
+        form: old.form ?? "fullchain",
+        hasKey: old.hasKey,
       }),
     );
     if (request.revokeOld && (old.status === "valid" || old.status === "expires-soon")) {
@@ -892,7 +902,7 @@ const sample = {
       serial: serial.padEnd(32, "0"),
       notAfter: fromNow(expiresIn),
       folder: sampleFolder(request.pkiPath, names[0]),
-      files: sampleFiles(old.form === "separate" ? "separate" : "fullchain", false, false),
+      files: sampleFiles(old.form ?? "fullchain", old.hasKey, old.issuedBy === "root"),
     };
   },
   setGroup: async (path: string, serials: string[], group: string | null): Promise<Pki> => {

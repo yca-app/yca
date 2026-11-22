@@ -636,6 +636,54 @@ fn a_certificate_revoked_before_its_ca_was_replaced_drops_off_the_list() {
 }
 
 #[test]
+fn the_revocation_list_of_a_replaced_issuing_ca_is_not_taken_for_the_new_ones() {
+    let mut pki = pki();
+    let at = now();
+    let list = pki.issuing.revocation_list(&[], 1, at).unwrap();
+    pki.store.save_crl(CaRole::Issuing, &list).unwrap();
+    assert_eq!(
+        pki.store.crl_status(CaRole::Issuing, at).unwrap().number,
+        Some(1)
+    );
+
+    let replacement = pki
+        .root
+        .create_issuing("Second Issuing CA", key(), at)
+        .unwrap();
+    pki.store
+        .set_issuing(replacement.certificate_der(), 2002)
+        .unwrap();
+
+    // The old list went with the old CA; the new one has none yet.
+    let dir = pki.store.dir().to_owned();
+    assert!(!dir.join("crl/issuing.crl.pem").exists());
+    assert!(!dir.join("crl/issuing.crl").exists());
+    let kept: Vec<String> = fs::read_dir(dir.join("retired"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        kept.iter()
+            .filter(|name| name.ends_with(".crl.pem"))
+            .count(),
+        1
+    );
+    assert_eq!(kept.iter().filter(|name| name.ends_with(".crl")).count(), 1);
+    let status = pki.store.crl_status(CaRole::Issuing, at).unwrap();
+    assert_eq!((status.number, status.next_update), (None, None));
+
+    // A list another CA signed, put where the current one's belongs, as a
+    // workspace of before this was fixed has it, is not taken for it
+    // either.
+    fs::write(dir.join("crl/issuing.crl.pem"), list.pem()).unwrap();
+    let status = Store::open(&dir)
+        .unwrap()
+        .crl_status(CaRole::Issuing, at)
+        .unwrap();
+    assert_eq!((status.number, status.next_update), (None, None));
+}
+
+#[test]
 fn the_root_revokes_a_replaced_issuing_ca_as_a_whole() {
     let mut pki = pki();
     let at = now();
@@ -1285,7 +1333,7 @@ fn the_files_of_a_certificate_can_be_written_again_in_another_form() {
                     ..repack(ExportForm::Fullchain)
                 }
             ),
-            Err(Error::InvalidRequest(_))
+            Err(Error::InvalidRequest(_) | Error::WrongP12Password)
         ));
         assert_eq!(files_of(&pki, "nas.home.example"), ["certificate.p12"]);
     }
@@ -1676,4 +1724,190 @@ fn an_entry_that_does_not_name_its_signer_still_finds_the_ca_that_signed_it() {
         .unwrap(),
         pki.issuing.certificate_pem()
     );
+}
+
+/// Renews a certificate the way the window and the command do: what the
+/// files are written from is read first, then the CA signs, then the new
+/// certificate gets a folder of its own.
+fn renew(pki: &mut Pki, serial: &str, opens: Option<&str>) -> Result<String, Error> {
+    let at = now();
+    let old = pki.store.find(serial).unwrap().clone();
+    let renewal = pki.store.renewal(&old, opens)?;
+    let request = LeafRequest::tls_server(old.names.clone()).unwrap();
+    let previous = pki.store.certificate_der(&old).unwrap();
+    let issued = pki.issuing.reissue(&request, &previous, at).unwrap();
+    let folder = pki
+        .store
+        .new_certificate_folder(&old.names[0], old.group.as_deref())
+        .unwrap();
+    let serial = pki
+        .store
+        .record_in(
+            &folder,
+            &issued,
+            &request,
+            CaRole::Issuing,
+            Some(serial),
+            at,
+        )
+        .unwrap()
+        .serial
+        .clone();
+    for file in renewal.files(&issued, &old.names[0]).unwrap() {
+        folder.write(&file).unwrap();
+    }
+    Ok(serial)
+}
+
+#[test]
+fn a_renewed_certificate_has_its_key_in_its_own_folder() {
+    let mut pki = pki();
+    let (old, device_key) = issue_with_files(
+        &mut pki,
+        "vpn.home.example",
+        CaRole::Issuing,
+        ExportForm::Separate,
+        true,
+    );
+    let renewed = renew(&mut pki, &old, None).unwrap();
+
+    // The same form of files as before, and the same key.
+    assert_eq!(
+        files_of(&pki, "vpn.home.example 2"),
+        ["certificate.crt", "intermediate-ca.crt", "private-key.key"]
+    );
+    let folder = pki.store.dir().join("certificates/vpn.home.example 2");
+    assert_eq!(
+        fs::read_to_string(folder.join("private-key.key")).unwrap(),
+        device_key.serialize_pem()
+    );
+    let record = pki.store.find(&renewed).unwrap().clone();
+    assert_eq!(pki.store.form(&record), Some(ExportForm::Separate));
+
+    // Deleting the certificate it replaced takes nothing from it.
+    pki.store.delete(&old, now()).unwrap();
+    assert!(pki.store.has_key(&record));
+    assert!(folder.join("private-key.key").is_file());
+}
+
+#[test]
+fn a_renewed_certificate_in_a_p12_file_takes_its_password() {
+    let mut pki = pki();
+    let (old, device_key) = issue_with_files(
+        &mut pki,
+        "laptop.home.example",
+        CaRole::Issuing,
+        ExportForm::Fullchain,
+        true,
+    );
+    pki.store
+        .repackage(
+            &old,
+            Repack {
+                password: Some("correct horse"),
+                encryption: P12Encryption::Compatible,
+                ..repack(ExportForm::Pkcs12)
+            },
+        )
+        .unwrap();
+
+    // Without the password, or with a wrong one, nothing is signed.
+    assert!(matches!(
+        renew(&mut pki, &old, None),
+        Err(Error::InvalidRequest(_))
+    ));
+    assert!(matches!(
+        renew(&mut pki, &old, Some("wrong")),
+        Err(Error::WrongP12Password)
+    ));
+    assert_eq!(pki.store.records().len(), 1);
+
+    // With it, one file again, with the same password, the same key and
+    // the same encryption for an older system.
+    renew(&mut pki, &old, Some("correct horse")).unwrap();
+    assert_eq!(files_of(&pki, "laptop.home.example 2"), ["certificate.p12"]);
+    let sealed = fs::read(
+        pki.store
+            .dir()
+            .join("certificates/laptop.home.example 2/certificate.p12"),
+    )
+    .unwrap();
+    assert_eq!(
+        yca_core::key_from_p12(&sealed, "correct horse")
+            .unwrap()
+            .as_slice(),
+        device_key.serialize_der().as_slice()
+    );
+    assert_eq!(yca_core::p12_encryption(&sealed), P12Encryption::Compatible);
+}
+
+#[test]
+fn a_p12_file_says_how_it_is_encrypted() {
+    let mut pki = pki();
+    let (serial, _) = issue_with_files(
+        &mut pki,
+        "phone.home.example",
+        CaRole::Issuing,
+        ExportForm::Fullchain,
+        true,
+    );
+    let sealed = || {
+        fs::read(
+            pki.store
+                .dir()
+                .join("certificates/phone.home.example/certificate.p12"),
+        )
+        .unwrap()
+    };
+    let mut store = Store::open(pki.store.dir()).unwrap();
+    store
+        .repackage(
+            &serial,
+            Repack {
+                password: Some("pw-123456"),
+                ..repack(ExportForm::Pkcs12)
+            },
+        )
+        .unwrap();
+    assert_eq!(yca_core::p12_encryption(&sealed()), P12Encryption::Modern);
+    // Something that is no .p12 file at all is taken for a current one.
+    assert_eq!(
+        yca_core::p12_encryption(b"not a file"),
+        P12Encryption::Modern
+    );
+}
+
+#[test]
+fn a_key_that_does_not_belong_to_the_certificate_is_not_renewed_with() {
+    let mut pki = pki();
+    let (old, _) = issue_with_files(
+        &mut pki,
+        "nas.home.example",
+        CaRole::Issuing,
+        ExportForm::Fullchain,
+        true,
+    );
+    fs::write(
+        pki.store
+            .dir()
+            .join("certificates/nas.home.example/private-key.key"),
+        key().serialize_pem(),
+    )
+    .unwrap();
+    assert!(matches!(renew(&mut pki, &old, None), Err(Error::Store(_))));
+    assert_eq!(pki.store.records().len(), 1);
+}
+
+#[test]
+fn a_renewed_certificate_of_a_device_that_keeps_its_key_has_none() {
+    let mut pki = pki();
+    let (old, _) = issue_with_files(
+        &mut pki,
+        "switch.home.example",
+        CaRole::Issuing,
+        ExportForm::Fullchain,
+        false,
+    );
+    renew(&mut pki, &old, None).unwrap();
+    assert_eq!(files_of(&pki, "switch.home.example 2"), ["fullchain.crt"]);
 }

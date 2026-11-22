@@ -208,9 +208,13 @@ fn check_one_file(new_key: fn() -> KeyPair, encryption: P12Encryption) {
     );
     assert!(matches!(
         key_from_p12(&archive.contents, "wrong"),
-        Err(Error::InvalidRequest(_))
+        Err(Error::WrongP12Password)
     ));
     assert!(KeyStore::from_pkcs12(&archive.contents, "wrong", Pkcs12ImportPolicy::Strict).is_err());
+
+    // How it is encrypted can be told from the file, for writing a
+    // renewed certificate's file the same way.
+    assert_eq!(yca_core::p12_encryption(&archive.contents), encryption);
 }
 
 #[test]

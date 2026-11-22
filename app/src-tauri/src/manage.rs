@@ -32,12 +32,18 @@ pub struct ReissueRequest {
     /// Expire after this many days instead of as late as possible.
     #[serde(default)]
     days: Option<u32>,
+    /// The password of the `.p12` file the old certificate is in, where
+    /// it is in one: its private key is inside, and the new file gets the
+    /// same password.
+    #[serde(default)]
+    opens: Option<String>,
     pin: String,
 }
 
 /// Issues a new certificate for the key of an existing one, to change its
 /// names or to renew it. The private key stays on the device; only the new
-/// certificate has to be installed there.
+/// certificate has to be installed there. Its folder holds the key all the
+/// same, as the old one's did, so that it is complete on its own.
 #[tauri::command]
 pub async fn reissue_certificate(
     app: AppHandle,
@@ -50,6 +56,7 @@ pub async fn reissue_certificate(
 
 fn reissue(app: &AppHandle, request: ReissueRequest) -> Result<Issued, Failure> {
     let pin = Zeroizing::new(request.pin);
+    let opens = request.opens.map(Zeroizing::new);
     let lock = app.state::<KeyLock>();
     let _signing = lock.wait();
 
@@ -62,6 +69,8 @@ fn reissue(app: &AppHandle, request: ReissueRequest) -> Result<Issued, Failure> 
         request.names
     };
     let leaf_request = limited(LeafRequest::for_profile(old.profile, &names)?, request.days)?;
+    // The key, and the password of its file, before the YubiKey signs.
+    let renewal = store.renewal(&old, opens.as_deref().map(String::as_str))?;
     // The new certificate stays in the group of the one it replaces.
     let folder = store.new_certificate_folder(&leaf_request.names()[0], old.group.as_deref())?;
 
@@ -87,21 +96,8 @@ fn reissue(app: &AppHandle, request: ReissueRequest) -> Result<Issued, Failure> 
         store.revoke(&old.serial, now)?;
     }
 
-    // No private key: it never left the device the certificate is for.
-    // The files come in the form the old ones are in, as far as that can
-    // be had without the key.
-    let form = match store.form(&old) {
-        Some(ExportForm::Separate) => ExportForm::Separate,
-        Some(ExportForm::Fullchain | ExportForm::Pkcs12) | None => ExportForm::Fullchain,
-    };
-    let files = yca_core::export(
-        form,
-        ExportSource {
-            issued: &issued,
-            private_key_der: None,
-        },
-        None,
-    )?;
+    // The files come in the form the old ones are in, with the same key.
+    let files = renewal.files(&issued, &leaf_request.names()[0])?;
     filled(&folder, &issued, files)
 }
 

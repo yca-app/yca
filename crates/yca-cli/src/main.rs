@@ -197,7 +197,10 @@ enum Command {
 
     /// Issue a new certificate for the key of an existing one, for example
     /// to change a host name. The private key stays on the device; only
-    /// the new certificate has to be installed.
+    /// the new certificate has to be installed. Its folder gets the files
+    /// in the form of the old one, key included; a key inside a .p12 file
+    /// takes that file's password (or YCA_P12_OPENS), and the new file opens
+    /// with the same one.
     Reissue {
         /// The workspace folder.
         #[arg(long)]
@@ -1196,6 +1199,13 @@ fn reissue(
         names.join(", ")
     );
 
+    // The key, out of the password-protected file if it is in one, before
+    // the YubiKey signs: a wrong password then costs nothing.
+    let opens = match store.form(&old) {
+        Some(ExportForm::Pkcs12) if store.has_key(&old) => Some(p12_opens()?),
+        _ => None,
+    };
+    let renewal = store.renewal(&old, opens.as_ref().map(|password| password.as_str()))?;
     // The new certificate stays in the group of the one it replaces.
     let folder = store.new_certificate_folder(&names[0], old.group.as_deref())?;
 
@@ -1218,21 +1228,9 @@ fn reissue(
         store.revoke(&old.serial, now)?;
     }
 
-    // No private key: it never left the device the certificate is for.
-    // The files come in the form the old ones are in, as far as that can
-    // be had without the key.
-    let form = match store.form(&old) {
-        Some(ExportForm::Separate) => ExportForm::Separate,
-        Some(ExportForm::Fullchain | ExportForm::Pkcs12) | None => ExportForm::Fullchain,
-    };
-    Target::Folder(&folder).write_all(&yca_core::export(
-        form,
-        ExportSource {
-            issued: &issued,
-            private_key_der: None,
-        },
-        None,
-    )?)?;
+    // The files come in the form the old ones are in, with the same key:
+    // the folder of the new certificate is complete on its own.
+    Target::Folder(&folder).write_all(&renewal.files(&issued, &names[0])?)?;
     say!();
     say!("The private key did not change; install only the new certificate.");
     say!("Valid until {}", issued.not_after().date());

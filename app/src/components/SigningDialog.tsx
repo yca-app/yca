@@ -183,6 +183,8 @@ export function SigningDialog({
   const [files, setFiles] = useState<Files>("fullchain");
   const [password, setPassword] = useState("");
   const [passwordRepeat, setPasswordRepeat] = useState("");
+  // The password of the .p12 file a renewed certificate's key is in.
+  const [opens, setOpens] = useState("");
   const [signWithRoot, setSignWithRoot] = useState(false);
   const [revokeOld, setRevokeOld] = useState(true);
   // The choices most people leave as they are, and whether they show.
@@ -206,6 +208,7 @@ export function SigningDialog({
     setNames(earlier(task)?.names.join(", ") ?? "");
     setPassword("");
     setPasswordRepeat("");
+    setOpens("");
     setSignWithRoot(false);
     setRevokeOld(true);
     setShowOptions(false);
@@ -301,15 +304,19 @@ export function SigningDialog({
   // A key is made here unless the device made its own or keeps the old one.
   const makesKey = task.kind === "new" && requestPath === null;
   const passwordsOk = !needsPassword || (password !== "" && password === passwordRepeat);
+  // A renewal writes the key again, so out of a .p12 file it takes the
+  // file's password; the new file gets the same one.
+  const needsOpens = old !== null && old.form === "p12" && old.hasKey;
   const namesOk = nameList.length > 0 && (isServer(profile) || nameList.length === 1);
   // Asking for other names and then leaving them alone would be a renewal.
   const namesChanged = old !== null && nameList.join("\n") !== old.names.join("\n");
   const detailsOk =
-    task.kind === "renew"
+    (!needsOpens || opens !== "") &&
+    (task.kind === "renew"
       ? true
       : task.kind === "change"
         ? namesOk && namesChanged
-        : namesOk && passwordsOk;
+        : namesOk && passwordsOk);
   // What ends up in the certificate.
   const finalNames = task.kind === "renew" && old ? old.names : nameList;
   // Only a certificate that is still valid can be revoked, and only while
@@ -383,6 +390,7 @@ export function SigningDialog({
                   names: task.kind === "change" ? nameList : [],
                   revokeOld: revokeOld && canRevokeOld,
                   days,
+                  opens: needsOpens ? opens : null,
                   pin,
                 },
                 touched,
@@ -451,8 +459,15 @@ export function SigningDialog({
       setError(explain(failure));
       // A wrong PIN has to be typed again; a missed touch does not.
       if (failure.kind !== "not-touched") setPin("");
-      // A revocation list has no step before the PIN to go back to.
-      setStep(failure.kind === "key-missing" && task.kind !== "list" ? "details" : "pin");
+      // A revocation list has no step before the PIN to go back to. A
+      // wrong password for the file is told where it is typed; the
+      // YubiKey was not asked for anything.
+      setStep(
+        (failure.kind === "key-missing" && task.kind !== "list") ||
+          failure.kind === "wrong-password"
+          ? "details"
+          : "pin",
+      );
     }
   }
 
@@ -689,6 +704,19 @@ export function SigningDialog({
                   </label>
                 )}
               </>
+            )}
+
+            {needsOpens && (
+              <Field label={t.repack.opens} hint={t.renewOpensHint}>
+                <SecretInput
+                  // A renewal has no names to type: this is the first field.
+                  ref={task.kind === "renew" ? firstField : undefined}
+                  value={opens}
+                  onChange={(event) => setOpens(event.target.value)}
+                  className="w-64"
+                  inputClassName={fieldHeight}
+                />
+              </Field>
             )}
 
             {canRevokeOld && (
@@ -1084,6 +1112,8 @@ export function explain(failure: Failure): string {
       return t.failure.notTouched;
     case "key-missing":
       return t.failure.keyMissing;
+    case "wrong-password":
+      return t.failure.wrongPassword;
     case "interrupted":
       return t.failure.interrupted(failure.message);
     case "other":

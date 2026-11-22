@@ -601,7 +601,8 @@ const register = (): Certificate[] => (previewRegister ??= previewAdopted ? [] :
 const previewListed = new Set<string>(["c41d77aa".padEnd(32, "0")]);
 // Revoked certificates deleted from the sample register: still to be named.
 const previewDeletedRevoked: { serial: string; issuedBy: CaRole }[] = [];
-const previewListNumber: Record<CaRole, number> = { issuing: 1, root: 0 };
+// Both CAs of the sample have signed a list, as a CA in use would have.
+const previewListNumber: Record<CaRole, number> = { issuing: 1, root: 1 };
 
 /** Pretends to be a YubiKey: the PIN 000000 is wrong, 111111 is never
  *  touched, anything else works. */
@@ -1041,8 +1042,13 @@ const sample = {
   },
 };
 
+// `?sample=web` gives the sample PKI certificates for web servers and TLS
+// clients only, as the pictures in docs/screenshots show it.
+const previewSample = new URLSearchParams(window.location.search).get("sample");
+
 /** What the sample PKI issued before the preview started. */
 function earlier(): Certificate[] {
+  if (previewSample === "web") return earlierWeb();
   return [
     certificate("a91f03c2", "ipsec-client", ["alice@example.com"], -2, 3600, {
       group: "Family",
@@ -1073,6 +1079,42 @@ function earlier(): Certificate[] {
     certificate("3f6d2a18", "tls-server", ["printer.home.example"], -300, 525, {
       issuedBy: "root",
       hasKey: false,
+    }),
+  ];
+}
+
+/** The same with SSL/TLS certificates only: every status, groups, one
+ *  renewed, one the root signed for a device's own request. */
+function earlierWeb(): Certificate[] {
+  return [
+    certificate("5d20be77", "tls-server", ["nas.home.example", "192.168.1.20"], -12, 813, {
+      group: "Home",
+    }),
+    certificate("3f6d2a18", "tls-server", ["printer.home.example"], -300, 525, {
+      issuedBy: "root",
+      hasKey: false,
+      group: "Home",
+    }),
+    certificate("6b2f0d91", "tls-server", ["old-camera.home.example"], -900, -75, {
+      status: "expired",
+      group: "Home",
+    }),
+    certificate("8a1c55e0", "tls-server", ["router.home.example", "192.168.1.1"], -30, 795, {
+      group: "Network",
+    }),
+    certificate("0b3e91d4", "tls-server", ["switch-new.home.example"], -41, 784, {
+      replaces: "c41d77aa",
+      group: "Network",
+      hasKey: false,
+    }),
+    certificate("c41d77aa", "tls-server", ["switch-old.home.example"], -400, 425, {
+      status: "revoked",
+      revokedAt: fromNow(-41),
+      group: "Network",
+    }),
+    certificate("d4e7a3b2", "tls-server", ["grafana.home.example"], -60, 765),
+    certificate("e2a8f590", "tls-client", ["backup-agent"], -700, 21, {
+      status: "expires-soon",
     }),
   ];
 }

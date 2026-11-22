@@ -4,6 +4,11 @@ A small macOS app for running your own certificate authority: TLS certificates f
 
 It is meant for a home lab or a small office, where a public CA is of no use and a full PKI product is too much. If you have used [XCA](https://hohnstaedt.de/xca/) for this, CA for YubiKey does the same job with fewer choices to make and with the CA keys on hardware instead of in a file.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/main-dark.png">
+  <img alt="The window of CA for YubiKey: the root CA and the issuing CA with their YubiKeys on the left, and the certificates of the workspace on the right, sorted into groups, with what each is for, its status and when it expires." src="docs/screenshots/main-light.png">
+</picture>
+
 ## What it does
 
 - **Creates the CA on YubiKeys.** A root CA on one YubiKey, which you keep in a safe, and an issuing CA on a second one for everyday use. One YubiKey alone works too, with the root CA signing everything.
@@ -19,6 +24,31 @@ It is meant for a home lab or a small office, where a public CA is of no use and
 - **Replaces a lost issuing CA.** The root CA signs a new one on another YubiKey; your devices go on trusting the root. If the old YubiKey was stolen, the root CA revokes the old issuing CA as well.
 
 Every signature needs the PIN of the YubiKey and a touch.
+
+## What it looks like
+
+A new certificate is asked for by what it is for and by what the device's upload form takes:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/new-certificate-dark.png">
+  <img alt="The New certificate dialog for a web server: the names and IP addresses, whether the device made its own key, and how the device takes the files, with the issuing CA and its YubiKey that will sign." src="docs/screenshots/new-certificate-light.png">
+</picture>
+
+An AI agent asks for a certificate, and the window shows what it asked for and who asks. Nothing is signed until you type the PIN and touch the key:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/agent-dark.png">
+  <img alt="The New certificate dialog filled in by Claude Code, with a note above it that Claude Code asks for this and that nothing is signed without the PIN and a touch." src="docs/screenshots/agent-light.png">
+</picture>
+
+Devices trust your certificates once they trust the root CA; the app has the steps for each system, with the fingerprints to compare:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/trust-dark.png">
+  <img alt="The dialog Make your devices trust this CA: the root CA certificate file, its SHA-256 and SHA-1 fingerprints, and the steps for macOS, with tabs for Windows, iPhone and iPad, and Android." src="docs/screenshots/trust-light.png">
+</picture>
+
+The pictures show the sample data of the app's preview, not a real authority.
 
 ## What it does to a YubiKey
 
@@ -131,7 +161,7 @@ cargo test --workspace
 npm --prefix app run build
 ```
 
-None of the tests needs a YubiKey. Without the Rust side, `npm --prefix app run dev` serves the window in a browser with sample data, which is how the interface is worked on.
+None of the tests needs a YubiKey. Without the Rust side, `npm --prefix app run dev` serves the window in a browser with sample data, which is how the interface is worked on. While it runs, `node scripts/screenshots.mjs` takes the pictures in `docs/screenshots` again from that sample data, with Google Chrome.
 
 The repository has three parts: `crates/yca-core` (everything that decides anything), `crates/yca-cli` (the `yca` command) and `app` (the window, built with Tauri and React). What the code holds to is in [CONTRIBUTING.md](CONTRIBUTING.md). What changed between versions is in [CHANGELOG.md](CHANGELOG.md), how a release is made in [RELEASING.md](RELEASING.md), and how to report a security problem in [SECURITY.md](SECURITY.md).
 

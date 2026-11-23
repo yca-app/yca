@@ -34,8 +34,8 @@ pub use rcgen::{
 };
 pub use revocation::{RevocationList, Revoked};
 pub use setup::{
-    Attestation, CaKeyType, NewCa, Protected, attest_ca_on_yubikey, change_pin, protect_yubikey,
-    reset_piv, unblock_pin,
+    Attestation, CaKeyType, NewCa, Protected, attest_ca_on_yubikey, change_pin, finish_protecting,
+    protect_yubikey, reset_piv, unblock_pin,
 };
 pub use signer::YubiKeySigner;
 pub use store::{

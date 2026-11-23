@@ -1849,6 +1849,14 @@ fn pin_for_new_ca(device: &Device) -> Result<Zeroizing<String>> {
     if device.factory.pin == Some(true) {
         say!("This YubiKey still has its factory PIN. A CA needs one of your own first.");
         set_own_credentials(device.serial)
+    } else if device.factory.puk == Some(true) || device.factory.management_key == Some(true) {
+        // Said before the PIN is asked for: the CA would be refused after it.
+        bail!(
+            "YubiKey {} has a PIN of its own, but still its factory PUK or management key, \
+             which everybody knows. Run `yca protect --device {}` first",
+            device.serial,
+            device.serial
+        );
     } else {
         prompt_pin(device)
     }
@@ -1922,11 +1930,41 @@ fn protect(serial: u32) -> Result<()> {
         .iter()
         .find(|device| device.serial == serial)
         .with_context(|| format!("YubiKey {serial} is not connected"))?;
-    if device.factory.pin != Some(true) {
-        bail!("the PIN of YubiKey {serial} is not the factory one; there is nothing to do");
+    if device.factory.pin == Some(true) {
+        say!("YubiKey {serial} still has its factory PIN.");
+        set_own_credentials(serial)?;
+        return Ok(());
     }
-    say!("YubiKey {serial} still has its factory PIN.");
-    set_own_credentials(serial)?;
+    // A PIN of its own, and the rest as it left the factory: the PUK that
+    // sets a new PIN, or the key that writes over what the YubiKey holds.
+    let puk = device.factory.puk == Some(true);
+    let management_key = device.factory.management_key == Some(true);
+    let left = match (puk, management_key) {
+        (true, true) => "PUK and management key",
+        (true, false) => "PUK",
+        (false, true) => "management key",
+        (false, false) => {
+            bail!("nothing on YubiKey {serial} is at its factory value; there is nothing to do")
+        }
+    };
+    say!("YubiKey {serial} has a PIN of its own, but still its factory {left}.");
+    let pin = prompt_pin(device)?;
+    let new_puk = match puk {
+        true => {
+            say!("  PUK: unblocks the PIN after three wrong attempts. Write it down and keep it");
+            say!("       away from the YubiKey; without it a blocked key has to be wiped.");
+            Some(prompt_new("PUK")?)
+        }
+        false => None,
+    };
+    let changed =
+        yca_core::finish_protecting(serial, &pin, new_puk.as_ref().map(|puk| puk.as_str()))?;
+    if changed.puk_changed {
+        say!("YubiKey {serial} now has your PUK.");
+    }
+    if changed.management_key_protected {
+        say!("Its management key is a random one now, kept on the YubiKey behind your PIN.");
+    }
     Ok(())
 }
 

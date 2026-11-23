@@ -19,8 +19,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use time::OffsetDateTime;
 use yca_core::device::{self, CaRole};
 use yca_core::{
-    Authority, CaKeyType, Error, NewCa, Store, YubiKeySigner, change_pin, protect_yubikey,
-    reset_piv, unblock_pin,
+    Authority, CaKeyType, Error, NewCa, Store, YubiKeySigner, change_pin, finish_protecting,
+    protect_yubikey, reset_piv, unblock_pin,
 };
 use zeroize::Zeroizing;
 
@@ -343,6 +343,49 @@ pub async fn protect_key(app: AppHandle, request: Protection) -> Result<(), Fail
     .map_err(other)?
 }
 
+/// What the window asks for when a YubiKey that has a PIN of its own is to
+/// lose what is left of its factory state.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Completion {
+    serial: u32,
+    /// The PIN the key has.
+    pin: String,
+    /// The PUK it is to get, where the one it has is the factory one.
+    #[serde(default)]
+    new_puk: Option<String>,
+}
+
+/// Gives a YubiKey that has a PIN of its own a PUK of its own as well,
+/// and a random management key kept on the key behind the PIN, whichever
+/// of the two is still the factory one. Keys and certificates are left
+/// alone. A wrong PIN costs one of the key's attempts, and is not tried
+/// with its last.
+#[tauri::command]
+pub async fn finish_protecting_key(app: AppHandle, request: Completion) -> Result<(), Failure> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let lock = app.state::<KeyLock>();
+        let _keys = lock.wait();
+        let pin = Zeroizing::new(request.pin);
+        let puk = request.new_puk.map(Zeroizing::new);
+        let found = device::list_devices()?;
+        let device = found
+            .usable
+            .iter()
+            .find(|device| device.serial == request.serial)
+            .ok_or_else(|| other(format!("YubiKey {} is not connected", request.serial)))?;
+        match device.pin_attempts_left {
+            0 => return Err(Failure::PinLocked { serial: None }),
+            1 => return Err(Failure::LastAttempt { serial: None }),
+            _ => {}
+        }
+        finish_protecting(request.serial, &pin, puk.as_deref().map(String::as_str))?;
+        Ok(())
+    })
+    .await
+    .map_err(other)?
+}
+
 /// What the window asks for when a YubiKey's PIN is to be changed.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -438,6 +481,11 @@ fn ready_key(key: &KeySetup) -> Result<Zeroizing<String>, Failure> {
             .ok_or_else(|| other("a new YubiKey needs a PUK as well as a PIN"))?;
         protect_yubikey(key.serial, &pin, puk)?;
     } else {
+        // A PIN of its own over the PUK every YubiKey ships with: said
+        // before the PIN is used, as the CA would be refused after it.
+        if device.factory.puk == Some(true) || device.factory.management_key == Some(true) {
+            return Err(Error::FactoryPukOrKey.into());
+        }
         match device.pin_attempts_left {
             0 => return Err(Failure::PinLocked { serial: None }),
             1 => return Err(Failure::LastAttempt { serial: None }),

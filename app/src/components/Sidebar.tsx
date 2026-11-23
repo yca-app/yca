@@ -305,6 +305,13 @@ export function KeyItems({
       <DropdownMenuItem disabled={device.factoryPin} onSelect={() => onKeyTask(device, "unblock")}>
         {t.key.unblockPin}
       </DropdownMenuItem>
+      {/* A PIN of its own over a factory PUK or management key: what is
+          left of the factory state goes here. */}
+      {!device.factoryPin && device.factoryCredentials && (
+        <DropdownMenuItem onSelect={() => onKeyTask(device, "finish")}>
+          {device.factoryPuk ? t.key.ownPuk : t.key.ownManagementKey}
+        </DropdownMenuItem>
+      )}
       <DropdownMenuSeparator />
       <DropdownMenuItem variant="destructive" onSelect={() => onKeyTask(device, "reset")}>
         {t.key.resetKey}
@@ -384,7 +391,6 @@ function CaCard({
   if (device && !holdsThisCa) warnings.push(device.ca ? t.wrongKey : t.key.holdsNothing);
   if (device && holdsThisCa && !device.ca?.keyMatchesCertificate) warnings.push(t.keyMismatch);
   if (holdsThisCa && device?.ca?.generatedOnDevice === false) warnings.push(t.keyImported);
-  if (device?.factoryCredentials && !device.factoryPin) warnings.push(t.factoryOther);
   const pinLocked = device !== undefined && device.pinAttemptsLeft === 0;
   if (device && device.pinAttemptsLeft < 3 && !pinLocked) {
     warnings.push(t.pinAttempts(device.pinAttemptsLeft));
@@ -470,6 +476,22 @@ function CaCard({
           </Button>
         </div>
       )}
+      {/* A PIN of its own over the PUK everybody knows protects nothing
+          yet: said with the way to put it right, as for a factory PIN. */}
+      {device && device.factoryCredentials && !device.factoryPin && (
+        <div className="mt-1.5 flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+          <TriangleAlert className="size-3.5 shrink-0" />
+          <span className="flex-1">{t.factoryOther}</span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 px-2 text-foreground"
+            onClick={() => onKeyTask(device, "finish")}
+          >
+            {t.setOwnPin}
+          </Button>
+        </div>
+      )}
       {device && pinLocked && (
         <div className="mt-1.5 flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-400">
           <TriangleAlert className="size-3.5 shrink-0" />
@@ -498,7 +520,7 @@ function CaCard({
         device &&
         holdsThisCa &&
         warnings.length === 0 &&
-        !device.factoryPin && (
+        !device.factoryCredentials && (
           <p className="mt-1.5 text-xs text-muted-foreground">{t.rootShouldRest}</p>
         )}
     </div>

@@ -68,6 +68,16 @@ pub enum Error {
     #[error("this YubiKey still has its factory PIN; set a new one first")]
     FactoryPin,
 
+    /// The PIN is the person's own, but the PUK or the management key is
+    /// still the one every YubiKey leaves the factory with. The PUK sets
+    /// a new PIN and the management key overwrites what the key holds, so
+    /// a CA must not be created behind them either.
+    #[error(
+        "this YubiKey still has its factory PUK or management key, which everybody knows; give \
+         it its own first"
+    )]
+    FactoryPukOrKey,
+
     /// Slot 9c of the YubiKey already holds a key or a certificate, and
     /// the caller did not ask to replace it.
     #[error("slot 9c of this YubiKey is already in use")]

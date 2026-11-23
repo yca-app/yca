@@ -136,6 +136,7 @@ pub fn run() {
             setup::create_issuing,
             setup::add_issuing,
             setup::protect_key,
+            setup::finish_protecting_key,
             setup::change_key_pin,
             setup::unblock_key_pin,
             setup::reset_key,
@@ -324,6 +325,48 @@ mod tests {
             serde_json::to_value(&view).unwrap()["usable"][1]["keyWithoutCertificate"],
             true
         );
+    }
+
+    #[test]
+    fn the_window_is_told_what_is_left_of_a_keys_factory_state_and_whether_it_can_be_used() {
+        use yca_core::device::FactoryCredentials;
+
+        let at = OffsetDateTime::now_utc();
+        let root = Authority::create_root("Root", key(), at).unwrap();
+        // A PIN of its owner's over the PUK every YubiKey ships with.
+        let mut half = yubikey(1, CaRole::Root, &root);
+        half.factory = FactoryCredentials {
+            pin: Some(false),
+            puk: Some(true),
+            management_key: Some(false),
+        };
+        // Firmware that does not say what the key holds, nor any of this.
+        let mut old = yubikey(2, CaRole::Root, &root);
+        old.firmware = (5, 2, 7);
+        old.describes_its_keys = false;
+        let view = devices_view(
+            Devices {
+                usable: vec![half, old, yubikey(3, CaRole::Root, &root)],
+                unusable: Vec::new(),
+            },
+            None,
+            None,
+        );
+        let shown = serde_json::to_value(&view).unwrap();
+        let of = |at: usize, what: &str| shown["usable"][at][what].clone();
+
+        assert_eq!(of(0, "factoryPin"), false);
+        assert_eq!(of(0, "factoryPuk"), true);
+        assert_eq!(of(0, "factoryManagementKey"), false);
+        assert_eq!(of(0, "factoryCredentials"), true);
+        assert_eq!(of(0, "tooOld"), false);
+
+        assert_eq!(of(1, "tooOld"), true);
+        assert_eq!(of(1, "factoryCredentials"), false);
+
+        assert_eq!(of(2, "tooOld"), false);
+        assert_eq!(of(2, "factoryCredentials"), false);
+        assert_eq!(of(2, "factoryPuk"), false);
     }
 
     #[test]

@@ -579,8 +579,10 @@ function CaChoice({
               {keys.map((key) => {
                 const elsewhere = key.serial === taken;
                 const checked = key.serial === chosen;
-                // A YubiKey that does not say what it holds gets no CA.
-                const unfit = elsewhere || key.tooOld;
+                // A YubiKey that does not say what it holds gets no CA,
+                // and neither does one whose PIN is its owner's while its
+                // PUK or management key is still the factory one.
+                const unfit = elsewhere || key.tooOld || halfProtected(key);
                 return (
                   <button
                     key={key.serial}
@@ -646,6 +648,13 @@ function KeyState({
   if (device.tooOld) {
     return <span className="mt-0.5 block text-xs text-muted-foreground">{t.keyTooOld}</span>;
   }
+  if (halfProtected(device)) {
+    return (
+      <span className="mt-0.5 block text-xs text-muted-foreground">
+        {device.factoryPuk ? t.keyNeedsPuk : t.keyNeedsManagementKey}
+      </span>
+    );
+  }
   if (device.slotInUse) {
     return (
       <span className="mt-0.5 block text-xs text-amber-700 dark:text-amber-400">
@@ -658,6 +667,12 @@ function KeyState({
       {device.factoryPin ? t.keyFresh : t.keyEmpty}
     </span>
   );
+}
+
+/** A PIN of its own over a factory PUK or management key, which everybody
+ *  knows: the menu of the key puts that right before it gets a CA. */
+function halfProtected(device: Device): boolean {
+  return !device.factoryPin && device.factoryCredentials;
 }
 
 /** What the CA slot of a YubiKey holds that a new CA would destroy. */

@@ -105,6 +105,11 @@ export const t = {
   // wizard's list; then as a line of its own where keys are listed, with
   // why under it.
   keyTooOld: "Firmware 5.3 or newer is needed.",
+  // A YubiKey with a PIN of its own whose PUK or management key is still
+  // the factory one. It gets no CA until that is put right, which the
+  // menu of the key does. Short, for one line in the wizard's list.
+  keyNeedsPuk: "It needs a PUK of its own first.",
+  keyNeedsManagementKey: "It needs a management key of its own.",
   tooOld: "This YubiKey's firmware is too old",
   tooOldAbout:
     "The app needs firmware 5.3 or newer. An older YubiKey does not say what it holds, so the app puts no CA on it and does not sign with one.",
@@ -336,10 +341,16 @@ export const t = {
   key: {
     changePin: "Change PIN…",
     unblockPin: "Unblock PIN with PUK…",
+    // For a YubiKey with a PIN of its own whose PUK, or management key, is
+    // still the one every YubiKey ships with.
+    ownPuk: "A PUK of your own…",
+    ownManagementKey: "Replace the factory management key…",
     resetKey: "Reset YubiKey…",
     currentPin: "Current PIN",
     puk: "PUK",
     newPinHint: "6 to 8 characters. The PIN is asked for with every signature.",
+    newPukHint:
+      "6 to 8 characters. The PUK unblocks the PIN after three wrong attempts. Write it down: nobody can recover it.",
     pinLocked: "The PIN is locked",
     unblockShort: "Unblock…",
     holdsNothing: "This YubiKey holds no CA any more",
@@ -349,6 +360,23 @@ export const t = {
         "This YubiKey still has the PIN every YubiKey ships with, so whoever gets hold of it can sign with its CA. Its CA stays as it is and works with the new PIN.",
       confirm: "Set PIN and PUK",
       done: "This YubiKey has a PIN and a PUK of your own now.",
+    },
+    // A PIN of one's own over the PUK everybody knows: the PUK sets a new
+    // PIN, so the PIN protects nothing until the PUK goes too.
+    finish: {
+      title: "A PUK of your own",
+      about:
+        "This YubiKey has a PIN of your own, but its PUK is still the one every YubiKey ships with. Whoever gets hold of the YubiKey can set a new PIN with that PUK and sign with its CA. What is on the YubiKey stays as it is.",
+      confirm: "Set PUK",
+      done: "This YubiKey has a PUK of your own now.",
+    },
+    // The same where only the management key is left as it was.
+    finishKey: {
+      title: "Replace the factory management key",
+      about:
+        "This YubiKey has a PIN and a PUK of your own, but its management key is still the one every YubiKey ships with. With that key, what is on the YubiKey can be written over without the PIN. The app puts a random key in its place and keeps it on the YubiKey, behind your PIN.",
+      confirm: "Replace it",
+      done: "The management key of this YubiKey is replaced.",
     },
     change: {
       title: "Change PIN",

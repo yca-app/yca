@@ -1219,6 +1219,12 @@ function Welcome({
                           {t.tooOldAbout}
                         </span>
                       )}
+                      {/* The menu of the key puts it right. */}
+                      {!key.factoryPin && key.factoryCredentials && (
+                        <span className="mt-1 block text-xs text-amber-700 dark:text-amber-400">
+                          {t.factoryOther}
+                        </span>
+                      )}
                     </span>
                     <DropdownMenu modal={false}>
                       <DropdownMenuTrigger asChild>

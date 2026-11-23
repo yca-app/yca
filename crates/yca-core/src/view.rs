@@ -32,6 +32,13 @@ pub struct DeviceView {
     /// The PIN is the one every YubiKey ships with. Such a key gets a PIN
     /// and a PUK of the user's own before a CA is put on it.
     pub factory_pin: bool,
+    /// The PUK is the one every YubiKey ships with. Behind a PIN of the
+    /// user's own it undoes that PIN: whoever holds the key sets a new
+    /// one with it.
+    pub factory_puk: bool,
+    /// The management key is the factory one: with it, what the key holds
+    /// can be written over without the PIN.
+    pub factory_management_key: bool,
     /// Slot 9c holds a key or a certificate. Putting a new CA on this key
     /// destroys it.
     pub slot_in_use: bool,
@@ -231,6 +238,8 @@ pub fn devices_view(
                 pin_attempts_left: device.pin_attempts_left,
                 factory_credentials: device.factory.any(),
                 factory_pin: device.factory.pin == Some(true),
+                factory_puk: device.factory.puk == Some(true),
+                factory_management_key: device.factory.management_key == Some(true),
                 slot_in_use: device.signature_slot_in_use() || device.ca.is_some(),
                 key_without_certificate: device.key_without_certificate,
                 too_old: !device.describes_its_keys,

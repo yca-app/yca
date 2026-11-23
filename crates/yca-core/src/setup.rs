@@ -176,8 +176,15 @@ fn new_ca_key(serial: u32, pin: &str, ca: &NewCa<'_>) -> Result<YubiKeySigner, E
         return Err(Error::SlotInUse);
     }
     // A CA key behind the PIN every YubiKey ships with protects nothing.
-    if FactoryCredentials::read(&mut yubikey).pin == Some(true) {
+    // Nor does one behind the PUK every YubiKey ships with, which sets a
+    // new PIN, or the management key, which writes over what the key
+    // holds.
+    let factory = FactoryCredentials::read(&mut yubikey);
+    if factory.pin == Some(true) {
         return Err(Error::FactoryPin);
+    }
+    if factory.puk == Some(true) || factory.management_key == Some(true) {
+        return Err(Error::FactoryPukOrKey);
     }
     yubikey.verify_pin(&pin).map_err(device_error)?;
     authenticate(&mut yubikey)?;
@@ -321,6 +328,71 @@ pub fn protect_yubikey(serial: u32, new_pin: &str, new_puk: &str) -> Result<Prot
         .change_pin(FACTORY_PIN.as_bytes(), new_pin.as_bytes())
         .map_err(device_error)?;
 
+    Ok(Protected {
+        puk_changed,
+        management_key_protected,
+    })
+}
+
+/// Gives a YubiKey whose PIN is already its owner's what
+/// [`protect_yubikey`] gives a new one besides the PIN: a PUK in place of
+/// the factory one, and a random management key in place of the factory
+/// one, kept on the key itself where only the PIN can reach it.
+///
+/// A key gets into this state when its PIN alone was changed, by another
+/// tool, or by unblocking it with the factory PUK. Whoever holds such a
+/// key sets a new PIN with the PUK everybody knows, and signs.
+///
+/// `new_puk` is needed where the PUK is the factory one. What was changed
+/// before is left alone, and so is everything else on the key: a CA that
+/// is there keeps working. A wrong `pin` costs one of the key's attempts.
+pub fn finish_protecting(
+    serial: u32,
+    pin: &str,
+    new_puk: Option<&str>,
+) -> Result<Protected, Error> {
+    let pin = checked_pin(pin)?;
+    let mut yubikey = open_device(serial)?;
+    let factory = FactoryCredentials::read(&mut yubikey);
+    if factory.pin == Some(true) {
+        return Err(Error::FactoryPin);
+    }
+    let puk_changed = factory.puk == Some(true);
+    let management_key_protected = factory.management_key == Some(true);
+    if !puk_changed && !management_key_protected {
+        return Err(Error::InvalidRequest(
+            "nothing on this YubiKey is at its factory value any more".to_owned(),
+        ));
+    }
+    // Settled before anything is asked of the key.
+    let new_puk = match (puk_changed, new_puk) {
+        (true, Some(puk)) => {
+            check_new_credential("PUK", puk, FACTORY_PUK)?;
+            Some(puk)
+        }
+        (true, None) => {
+            return Err(Error::InvalidRequest(
+                "the PUK of this YubiKey is the factory one; it needs a new PUK".to_owned(),
+            ));
+        }
+        (false, _) => None,
+    };
+    yubikey.verify_pin(&pin).map_err(device_error)?;
+
+    if management_key_protected {
+        let factory_key = MgmKey::get_default(&yubikey).map_err(device_error)?;
+        yubikey.authenticate(&factory_key).map_err(device_error)?;
+        // Of the kind this firmware uses: 3DES before 5.7, AES-192 after.
+        MgmKey::generate_for(&yubikey, &mut getrandom::SysRng)
+            .map_err(device_error)?
+            .set_protected(&mut yubikey)
+            .map_err(device_error)?;
+    }
+    if let Some(puk) = new_puk {
+        yubikey
+            .change_puk(FACTORY_PUK.as_bytes(), puk.as_bytes())
+            .map_err(device_error)?;
+    }
     Ok(Protected {
         puk_changed,
         management_key_protected,

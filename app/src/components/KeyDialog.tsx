@@ -17,15 +17,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, type CaRole, type Device, type Failure } from "@/lib/api";
 import { commonName, t } from "@/lib/text";
+import { cn } from "@/lib/utils";
 
 /**
  * What can be done to a YubiKey's own credentials:
  * - `protect`: a PIN and a PUK in place of the factory ones,
  * - `change`: another PIN, for someone who knows the one it has,
  * - `unblock`: a new PIN by way of the PUK, when the PIN is lost or locked,
+ * - `finish`: a PUK in place of the factory one, and a management key in
+ *   place of the factory one, for a key whose PIN is its owner's already,
  * - `reset`: back to the factory state, when both are lost or to start over.
  */
-export type KeyTask = "protect" | "change" | "unblock" | "reset";
+export type KeyTask = "protect" | "change" | "unblock" | "finish" | "reset";
 
 interface Props {
   open: boolean;
@@ -58,10 +61,15 @@ export function KeyDialog({ open, onOpenChange, device, task, workspaceRole, onD
   // The YubiKey has done it. The dialog says so before it goes, instead
   // of vanishing and leaving its user to wonder whether it worked.
   const [done, setDone] = useState(false);
+  // Whether `finish` gives the key a PUK, or only a management key. Taken
+  // from the key as the dialog comes up: once it is done the key says
+  // otherwise, and the dialog must not change its words for that.
+  const [withPuk, setWithPuk] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setDone(false);
+    setWithPuk(device?.factoryPuk ?? false);
     setCurrent("");
     setPin("");
     setPinRepeat("");
@@ -69,6 +77,8 @@ export function KeyDialog({ open, onOpenChange, device, task, workspaceRole, onD
     setPukRepeat("");
     setConfirmation("");
     setError(null);
+    // Not on `device`: the dialog starts over when it comes up, not
+    // whenever the key is looked at again.
   }, [open, task]);
 
   // A changed PIN needs no more than a glance, so the dialog closes by
@@ -81,16 +91,21 @@ export function KeyDialog({ open, onOpenChange, device, task, workspaceRole, onD
 
   const lengthOk = (value: string) => value.length >= 6 && value.length <= 8;
   const pinsDiffer = pinRepeat !== "" && pin !== pinRepeat;
-  const puksDiffer = task === "protect" && pukRepeat !== "" && puk !== pukRepeat;
+  // The tasks that set a PUK, typed twice.
+  const setsPuk = task === "protect" || (task === "finish" && withPuk);
+  const puksDiffer = setsPuk && pukRepeat !== "" && puk !== pukRepeat;
   const newPinOk = lengthOk(pin) && pin === pinRepeat;
+  const newPukOk = lengthOk(puk) && puk === pukRepeat;
   const ready =
     task === "protect"
-      ? newPinOk && lengthOk(puk) && puk === pukRepeat
+      ? newPinOk && newPukOk
       : task === "change"
         ? lengthOk(current) && newPinOk
         : task === "unblock"
           ? lengthOk(puk) && newPinOk
-          : device !== null && confirmation.trim() === String(device.serial);
+          : task === "finish"
+            ? lengthOk(current) && (!withPuk || newPukOk)
+            : device !== null && confirmation.trim() === String(device.serial);
 
   async function run() {
     if (!device) return;
@@ -101,6 +116,8 @@ export function KeyDialog({ open, onOpenChange, device, task, workspaceRole, onD
       if (task === "protect") await api.protectKey({ serial, newPin: pin, newPuk: puk });
       else if (task === "change") await api.changePin({ serial, currentPin: current, newPin: pin });
       else if (task === "unblock") await api.unblockPin({ serial, puk, newPin: pin });
+      else if (task === "finish")
+        await api.finishProtecting({ serial, pin: current, newPuk: withPuk ? puk : null });
       else await api.resetKey(serial);
       setDone(true);
     } catch (reason) {
@@ -117,7 +134,15 @@ export function KeyDialog({ open, onOpenChange, device, task, workspaceRole, onD
     }
   }
 
-  const words = t.key[task];
+  // What is wrong with what was typed so far, if anything is.
+  const amiss =
+    pinsDiffer || puksDiffer
+      ? t.credentialsDiffer
+      : (pin !== "" && !lengthOk(pin)) || (setsPuk && puk !== "" && !lengthOk(puk))
+        ? t.credentialLength
+        : null;
+
+  const words = task === "finish" ? (withPuk ? t.key.finish : t.key.finishKey) : t.key[task];
   return (
     <Dialog open={open} onOpenChange={(next) => !busy && onOpenChange(next)}>
       {/* A click beside the dialog does not throw away what was typed. */}
@@ -196,7 +221,7 @@ export function KeyDialog({ open, onOpenChange, device, task, workspaceRole, onD
 
           {task !== "reset" && (
             <div className="grid grid-cols-2 gap-3">
-              {task === "change" && (
+              {(task === "change" || task === "finish") && (
                 <div className="col-span-2 grid grid-cols-2 gap-3">
                   <Secret
                     label={t.key.currentPin}
@@ -211,19 +236,23 @@ export function KeyDialog({ open, onOpenChange, device, task, workspaceRole, onD
                   <Secret label={t.key.puk} value={puk} onChange={setPuk} autoFocus />
                 </div>
               )}
-              <Secret
-                label={t.newPin}
-                value={pin}
-                onChange={setPin}
-                autoFocus={task === "protect"}
-              />
-              <Secret
-                label={t.newPinRepeat}
-                value={pinRepeat}
-                onChange={setPinRepeat}
-                invalid={pinsDiffer}
-              />
-              {task === "protect" && (
+              {task !== "finish" && (
+                <>
+                  <Secret
+                    label={t.newPin}
+                    value={pin}
+                    onChange={setPin}
+                    autoFocus={task === "protect"}
+                  />
+                  <Secret
+                    label={t.newPinRepeat}
+                    value={pinRepeat}
+                    onChange={setPinRepeat}
+                    invalid={pinsDiffer}
+                  />
+                </>
+              )}
+              {setsPuk && (
                 <>
                   <Secret label={t.newPuk} value={puk} onChange={setPuk} />
                   <Secret
@@ -237,18 +266,22 @@ export function KeyDialog({ open, onOpenChange, device, task, workspaceRole, onD
             </div>
           )}
 
-          {task !== "reset" && (
-            <p className="text-xs text-muted-foreground">
-              {pinsDiffer || puksDiffer ? (
-                <span className="text-destructive">{t.credentialsDiffer}</span>
-              ) : (pin !== "" && !lengthOk(pin)) ||
-                (task === "protect" && puk !== "" && !lengthOk(puk)) ? (
-                <span className="text-destructive">{t.credentialLength}</span>
-              ) : task === "protect" ? (
-                t.newCredentialsHint
-              ) : (
-                t.key.newPinHint
-              )}
+          {/* Nothing to say where only the management key is replaced:
+              the one field there is the PIN the key has.
+
+              What is amiss takes the place of the hint without taking its
+              room: the two lie on top of each other, so the form keeps
+              its height while one types. */}
+          {task !== "reset" && (task !== "finish" || withPuk) && (
+            <p className="grid text-xs text-muted-foreground">
+              <span className={cn("col-start-1 row-start-1", amiss && "invisible")}>
+                {task === "protect"
+                  ? t.newCredentialsHint
+                  : task === "finish"
+                    ? t.key.newPukHint
+                    : t.key.newPinHint}
+              </span>
+              {amiss && <span className="col-start-1 row-start-1 text-destructive">{amiss}</span>}
             </p>
           )}
 

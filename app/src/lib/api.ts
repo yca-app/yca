@@ -40,6 +40,12 @@ export interface Device {
   factoryCredentials: boolean;
   /** The PIN is the one every YubiKey ships with. */
   factoryPin: boolean;
+  /** The PUK is the one every YubiKey ships with. Behind a PIN of one's
+   *  own it undoes that PIN: whoever holds the key sets a new one with it. */
+  factoryPuk: boolean;
+  /** The management key is the factory one: with it, what the key holds
+   *  can be written over without the PIN. */
+  factoryManagementKey: boolean;
   /** Slot 9c holds something; a new CA on this key destroys it. */
   slotInUse: boolean;
   /** What it holds is a key without a certificate, left by a CA that was
@@ -586,6 +592,17 @@ export const api = {
   protectKey: (request: { serial: number; newPin: string; newPuk: string }): Promise<void> =>
     inApp ? invoke("protect_key", { request }) : sample.protectKey(request),
   /**
+   * Gives a YubiKey that has a PIN of its own a PUK of its own as well, and
+   * a random management key, whichever is still the factory one. `newPuk`
+   * is `null` where only the management key is. WRITES TO THE YUBIKEY.
+   */
+  finishProtecting: (request: {
+    serial: number;
+    pin: string;
+    newPuk: string | null;
+  }): Promise<void> =>
+    inApp ? invoke("finish_protecting_key", { request }) : sample.finishProtecting(request),
+  /**
    * Changes the PIN of a YubiKey. WRITES TO THE YUBIKEY, but only the PIN.
    * Rejects with a {@link Failure}.
    */
@@ -782,7 +799,8 @@ let previewAlone = false;
 // `?keys=stranger` is a root with the issuing CA of some other PKI,
 // `?keys=root` the root alone, `?keys=roots` two roots, `?keys=new` two
 // YubiKeys fresh from the box, `?keys=old` one of them with firmware too
-// old for a CA; anything else is a root with its own
+// old for a CA, `?keys=half` one with a PIN of its own over the factory
+// PUK; anything else is a root with its own
 // issuing CA. `?keys=odd` is that too, with what a CA taken over from
 // another tool may bring: an issuing YubiKey that still has its factory
 // PIN, and a root CA whose key was imported rather than made inside. `?keys=lost` is that too, until the PKI is open: then the
@@ -802,6 +820,8 @@ const sampleKey = (
   pinAttemptsLeft: 3,
   factoryCredentials: false,
   factoryPin: false,
+  factoryPuk: false,
+  factoryManagementKey: false,
   slotInUse: true,
   keyWithoutCertificate: false,
   tooOld: false,
@@ -926,6 +946,11 @@ const sample = {
     previewIssuingKnown = true;
     previewAlone = false;
     return sample.pki(request.workspacePath);
+  },
+  finishProtecting: async (request: { serial: number; pin: string }): Promise<void> => {
+    await pause(600);
+    if (request.pin === "000000") throw { kind: "wrong-pin", attemptsLeft: 2 } satisfies Failure;
+    previewProtected.add(request.serial);
   },
   protectKey: async (request: { serial: number; newPin: string }): Promise<void> => {
     await pause(800);
@@ -1151,6 +1176,8 @@ const sample = {
       const unprotected = !previewProtected.has(issuing.serial);
       issuing.factoryCredentials = unprotected;
       issuing.factoryPin = unprotected;
+      issuing.factoryPuk = unprotected;
+      issuing.factoryManagementKey = unprotected;
       root.ca!.generatedOnDevice = false;
     }
     // Fresh from the box: nothing on it and the PIN everybody knows.
@@ -1160,6 +1187,8 @@ const sample = {
       pinAttemptsLeft: 3,
       factoryCredentials: true,
       factoryPin: true,
+      factoryPuk: true,
+      factoryManagementKey: true,
       slotInUse: false,
       keyWithoutCertificate: false,
       tooOld: false,
@@ -1173,13 +1202,28 @@ const sample = {
       firmware: "5.2.7",
       factoryCredentials: false,
       factoryPin: false,
+      factoryPuk: false,
+      factoryManagementKey: false,
       tooOld: true,
     });
+    // Given a PIN by another tool, and left with the PUK everybody knows.
+    const half = (serial: number): Device => {
+      const done = previewProtected.has(serial);
+      return {
+        ...fresh(serial),
+        factoryCredentials: !done,
+        factoryPin: false,
+        factoryPuk: !done,
+        factoryManagementKey: !done,
+      };
+    };
     // Given a PIN by then, and left with a key that has no certificate.
     const unfinished = (key: Device): Device => ({
       ...key,
       factoryCredentials: false,
       factoryPin: false,
+      factoryPuk: false,
+      factoryManagementKey: false,
       slotInUse: true,
       keyWithoutCertificate: true,
       ca: null,
@@ -1187,6 +1231,7 @@ const sample = {
     const before: Record<string, Device[]> = {
       new: [fresh(30000001), fresh(30000002)],
       old: [fresh(30000001), old(30000003)],
+      half: [fresh(30000001), half(30000004)],
       stranger: [sampleKey(20000003, "issuing", "Lab Issuing CA", 900, false), root],
       root: [root],
       // With two roots there is no telling which one an issuing CA is

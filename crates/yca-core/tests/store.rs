@@ -2126,3 +2126,153 @@ fn the_certificate_a_renewal_replaced_is_revoked_if_it_still_can_be() {
     pki.store.delete(&nas, now()).unwrap();
     assert!(!pki.store.revoke_replaced(&nas, now()).unwrap());
 }
+
+#[test]
+fn a_folder_that_went_missing_is_not_given_to_the_next_certificate() {
+    let mut pki = pki();
+    let certificates = pki.store.dir().join("certificates");
+    let (first, _) = issue_with_files(
+        &mut pki,
+        "nas.home.example",
+        CaRole::Issuing,
+        ExportForm::Fullchain,
+        true,
+    );
+    // Its owner moved the folder away, as the files are theirs to do with
+    // as they like. The register still names it.
+    let elsewhere = pki.store.dir().join("taken away");
+    fs::rename(certificates.join("nas.home.example"), &elsewhere).unwrap();
+
+    // The next certificate of that name gets a folder of its own.
+    let (second, second_key) = issue_with_files(
+        &mut pki,
+        "nas.home.example",
+        CaRole::Issuing,
+        ExportForm::Fullchain,
+        true,
+    );
+    assert_eq!(
+        pki.store.find(&second).unwrap().folder,
+        "nas.home.example 2"
+    );
+    // So does one that renews the first, and a name that differs only in
+    // its capitals, which is the same name to the disk.
+    let renewed = renew(&mut pki, &second, None).unwrap();
+    assert_eq!(
+        pki.store.find(&renewed).unwrap().folder,
+        "nas.home.example 3"
+    );
+    let capitals = issue_into(&mut pki, "NAS.home.example", None);
+    assert_eq!(
+        pki.store.find(&capitals).unwrap().folder,
+        "NAS.home.example 4"
+    );
+
+    // Deleting the first takes nothing from the second.
+    pki.store.delete(&first, now()).unwrap();
+    assert_eq!(
+        fs::read_to_string(certificates.join("nas.home.example 2/private-key.key")).unwrap(),
+        second_key.serialize_pem()
+    );
+    assert_eq!(
+        files_of(&pki, "nas.home.example 2"),
+        ["fullchain.crt", "private-key.key"]
+    );
+    // And what was moved away is where its owner put it.
+    assert!(elsewhere.join("private-key.key").is_file());
+}
+
+#[test]
+fn a_certificate_moved_into_a_group_does_not_take_a_folder_the_register_names() {
+    let mut pki = pki();
+    let certificates = pki.store.dir().join("certificates");
+    let inside = issue_into(&mut pki, "nas.home.example", Some("Office"));
+    fs::remove_dir_all(certificates.join("Office/nas.home.example")).unwrap();
+
+    let moved = issue_into(&mut pki, "nas.home.example", None);
+    pki.store.set_group(&moved, Some("Office")).unwrap();
+    assert_eq!(
+        pki.store.find(&moved).unwrap().folder,
+        "Office/nas.home.example 2"
+    );
+    assert_eq!(
+        pki.store.find(&inside).unwrap().folder,
+        "Office/nas.home.example"
+    );
+}
+
+#[test]
+fn a_folder_two_entries_name_is_left_alone() {
+    let mut pki = pki();
+    let certificates = pki.store.dir().join("certificates");
+    let first = issue_into(&mut pki, "old.home.example", None);
+    let (second, second_key) = issue_with_files(
+        &mut pki,
+        "nas.home.example",
+        CaRole::Issuing,
+        ExportForm::Fullchain,
+        true,
+    );
+    // A workspace from before folders were kept apart: the first entry
+    // names the folder of the second.
+    let index_file = pki.store.dir().join("index.toml");
+    let index = fs::read_to_string(&index_file).unwrap();
+    fs::write(
+        &index_file,
+        index.replace(
+            "folder = \"old.home.example\"",
+            "folder = \"nas.home.example\"",
+        ),
+    )
+    .unwrap();
+    let mut store = Store::open(pki.store.dir()).unwrap();
+    assert_eq!(store.find(&first).unwrap().folder, "nas.home.example");
+
+    // Writing the files of the first again would write over the second's.
+    assert!(matches!(
+        store.repackage(&first, repack(ExportForm::Separate)),
+        Err(Error::Store(_))
+    ));
+    // Deleting it takes its entry and leaves the folder to the second.
+    store.delete(&first, now()).unwrap();
+    assert!(store.find(&first).is_err());
+    assert_eq!(
+        fs::read_to_string(certificates.join("nas.home.example/private-key.key")).unwrap(),
+        second_key.serialize_pem()
+    );
+    // Which is then alone in it, and can be written again and deleted.
+    store
+        .repackage(&second, repack(ExportForm::Separate))
+        .unwrap();
+    store.delete(&second, now()).unwrap();
+    assert!(!certificates.join("nas.home.example").exists());
+}
+
+#[test]
+fn files_are_not_written_again_with_a_key_that_is_not_the_certificates() {
+    let mut pki = pki();
+    let (serial, _) = issue_with_files(
+        &mut pki,
+        "nas.home.example",
+        CaRole::Issuing,
+        ExportForm::Fullchain,
+        true,
+    );
+    let folder = pki.store.dir().join("certificates/nas.home.example");
+    let foreign = key().serialize_pem();
+    fs::write(folder.join("private-key.key"), &foreign).unwrap();
+
+    assert!(matches!(
+        pki.store.repackage(&serial, repack(ExportForm::Separate)),
+        Err(Error::Store(_))
+    ));
+    // Nothing was written or removed.
+    assert_eq!(
+        files_of(&pki, "nas.home.example"),
+        ["fullchain.crt", "private-key.key"]
+    );
+    assert_eq!(
+        fs::read_to_string(folder.join("private-key.key")).unwrap(),
+        foreign
+    );
+}

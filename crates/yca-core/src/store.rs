@@ -896,6 +896,21 @@ impl Store {
         self.dir.join(CERTIFICATES_DIR).join(&record.folder)
     }
 
+    /// Whether the register names this folder as a certificate's, leaving
+    /// out the entry at `except`. A folder belongs to the certificate whose
+    /// entry names it even while it is not on the disk: its owner may have
+    /// moved it away, and the files of that certificate are theirs to
+    /// take. The names are compared the way the file systems a workspace
+    /// usually lies on compare them, without regard to case.
+    fn folder_is_taken(&self, folder: &str, except: Option<usize>) -> bool {
+        let wanted = folder.to_lowercase();
+        self.index
+            .certificates
+            .iter()
+            .enumerate()
+            .any(|(at, record)| Some(at) != except && record.folder.to_lowercase() == wanted)
+    }
+
     /// The form a certificate's files are in, going by what its folder
     /// holds. `None` if it holds none of them.
     ///
@@ -1005,10 +1020,25 @@ impl Store {
     pub fn repackage(&mut self, serial: &str, repack: Repack<'_>) -> Result<Repacked, Error> {
         let _held = self.hold()?;
         let record = self.find(serial)?.clone();
+        let position = self
+            .index
+            .certificates
+            .iter()
+            .position(|entry| entry.serial == record.serial);
+        if self.folder_is_taken(&record.folder, position) {
+            return Err(Error::Store(format!(
+                "the folder of certificate {} is another certificate's as well, so its files \
+                 cannot be told apart",
+                record.serial
+            )));
+        }
         let path = self.folder_of(&record);
         let der = self.certificate_der(&record)?;
         let intermediate = self.intermediate_der(&record, &der)?;
         let key = self.key_in(&path, repack.opens)?;
+        if let Some(key) = &key {
+            key_belongs(key, &der, &record.serial)?;
+        }
         let issued = IssuedCertificate::from_der(der, intermediate)?;
         let label = record.names.first().map_or("certificate", String::as_str);
         let files = export(
@@ -1079,17 +1109,7 @@ impl Store {
         let folder = self.folder_of(old);
         let key = self.key_in(&folder, opens)?;
         if let Some(key) = &key {
-            let der = self.certificate_der(old)?;
-            let certificate = parse(&der)?;
-            let belongs = KeyPair::try_from(key.as_slice()).is_ok_and(|key| {
-                certificate.public_key().raw == key.subject_public_key_info().as_slice()
-            });
-            if !belongs {
-                return Err(Error::Store(format!(
-                    "the private key in the folder of certificate {} does not belong to it",
-                    old.serial
-                )));
-            }
+            key_belongs(key, &self.certificate_der(old)?, &old.serial)?;
         }
         let form = self.form(old).unwrap_or_default();
         let p12 = match (form, opens) {
@@ -1203,6 +1223,12 @@ impl Store {
     /// thinks of it; a name that is taken, as by the certificate this one
     /// renews, gets a number. A certificate that goes into a group has its
     /// folder inside the group's.
+    ///
+    /// A name is taken if a folder of that name is there, and also if the
+    /// register names it for a certificate whose folder is gone. Given out
+    /// a second time, it would be the folder of two certificates, and
+    /// deleting the one would delete the files of the other, its private
+    /// key among them.
     pub fn new_certificate_folder(
         &self,
         first_name: &str,
@@ -1225,12 +1251,15 @@ impl Store {
                 n => format!("{safe} {n}"),
             };
             let path = base.join(&leaf);
+            let name = match &within {
+                Some(within) => format!("{within}/{leaf}"),
+                None => leaf,
+            };
+            if self.folder_is_taken(&name, None) {
+                continue;
+            }
             match fs::create_dir(&path) {
                 Ok(()) => {
-                    let name = match &within {
-                        Some(within) => format!("{within}/{leaf}"),
-                        None => leaf,
-                    };
                     return Ok(CertificateFolder {
                         name,
                         path,
@@ -1285,7 +1314,13 @@ impl Store {
                     1 => wanted.to_owned(),
                     n => format!("{wanted} {n}"),
                 })
-                .find(|candidate| !parent.join(candidate).exists())
+                .find(|candidate| {
+                    let name = match &within {
+                        Some(within) => format!("{within}/{candidate}"),
+                        None => candidate.clone(),
+                    };
+                    !parent.join(candidate).exists() && !self.folder_is_taken(&name, Some(position))
+                })
                 .expect("there is always another number");
             let to = parent.join(&leaf);
             fs::rename(from, &to).map_err(|e| io_error(&to, e))?;
@@ -1383,6 +1418,14 @@ impl Store {
         {
             return Err(Error::Store(format!(
                 "serial number {serial} is already in the register"
+            )));
+        }
+        // Another program may have entered a certificate under this name
+        // since the folder was made.
+        if self.folder_is_taken(&folder.name, None) {
+            return Err(Error::Store(format!(
+                "the folder {} belongs to another certificate by now; try again",
+                folder.name
             )));
         }
 
@@ -1548,10 +1591,18 @@ impl Store {
         // its folder by. If anything fails from here on, what is left is
         // public, and a key never lies about with no entry that leads to
         // it.
+        //
+        // A folder that another entry names too is left as it is: a
+        // workspace from before folders were kept apart can have one, and
+        // what is in it is then the other certificate's.
         let folder = self.folder_of(&self.index.certificates[position]);
-        for name in KEY_FILES {
-            remove_file(&folder.join(name))?;
-            remove_file(&folder.join(temporary(name)))?;
+        let shared =
+            self.folder_is_taken(&self.index.certificates[position].folder, Some(position));
+        if !shared {
+            for name in KEY_FILES {
+                remove_file(&folder.join(name))?;
+                remove_file(&folder.join(temporary(name)))?;
+            }
         }
         let record = self.index.certificates.remove(position);
 
@@ -1574,17 +1625,19 @@ impl Store {
         // gone, and after it the certificate's files and the register's
         // own copy.
         self.write_toml(INDEX_FILE, &self.index)?;
-        for name in CERTIFICATE_FILES {
-            remove_file(&folder.join(name))?;
-            remove_file(&folder.join(temporary(name)))?;
-        }
-        // Gone with its files, unless somebody put more in there, and the
-        // folder of its group with it if this was the last.
-        let _ = fs::remove_dir(&folder);
-        if let Some(parent) = folder.parent()
-            && parent != self.dir.join(CERTIFICATES_DIR)
-        {
-            remove_if_empty(parent);
+        if !shared {
+            for name in CERTIFICATE_FILES {
+                remove_file(&folder.join(name))?;
+                remove_file(&folder.join(temporary(name)))?;
+            }
+            // Gone with its files, unless somebody put more in there, and
+            // the folder of its group with it if this was the last.
+            let _ = fs::remove_dir(&folder);
+            if let Some(parent) = folder.parent()
+                && parent != self.dir.join(CERTIFICATES_DIR)
+            {
+                remove_if_empty(parent);
+            }
         }
         remove_file(&self.register_copy(&record.serial))?;
         Ok(Deleted {
@@ -1769,6 +1822,21 @@ impl Store {
         let temporary = self.dir.join(format!("{name}.tmp"));
         fs::write(&temporary, contents).map_err(|e| io_error(&temporary, e))?;
         fs::rename(&temporary, &path).map_err(|e| io_error(&path, e))
+    }
+}
+
+/// Refuses a private key that is not the key of the certificate it was
+/// found beside. Handed out together, the two could not be used.
+fn key_belongs(key_der: &[u8], certificate_der: &[u8], serial: &str) -> Result<(), Error> {
+    let certificate = parse(certificate_der)?;
+    let belongs = KeyPair::try_from(key_der)
+        .is_ok_and(|key| certificate.public_key().raw == key.subject_public_key_info().as_slice());
+    if belongs {
+        Ok(())
+    } else {
+        Err(Error::Store(format!(
+            "the private key in the folder of certificate {serial} does not belong to it"
+        )))
     }
 }
 

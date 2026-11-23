@@ -308,9 +308,12 @@ export function SetupWizard({ devices, workspace, onCancel, onCreated }: Props) 
                 await api.addIssuing(
                   {
                     workspacePath: workspace.path,
+                    root: workspace.root.sha256,
                     rootPin: signerPin,
                     key: setup,
-                    replacing: replaced !== null,
+                    // The one this wizard has shown since it was opened,
+                    // whatever the workspace has by now.
+                    replacing: replaced?.sha256 ?? null,
                     revokeReplaced,
                   },
                   onTouch,

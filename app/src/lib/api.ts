@@ -230,11 +230,16 @@ export interface IssuingSetup {
  */
 export interface IssuingAddition {
   workspacePath: string;
-  /** PIN of the YubiKey with the workspace's root CA, which signs. */
+  /** The root CA that was shown as the one that signs: its SHA-256 fingerprint. */
+  root: string;
+  /** PIN of the YubiKey with that root CA. */
   rootPin: string;
   key: KeySetup;
-  /** The workspace has an issuing CA, and this one takes its place. */
-  replacing: boolean;
+  /**
+   * The issuing CA that was shown as the one this takes the place of, by
+   * its SHA-256 fingerprint; `null` where the workspace has none yet.
+   */
+  replacing: string | null;
   /** Have the root CA revoke the replaced one: its YubiKey was stolen. */
   revokeReplaced: boolean;
 }

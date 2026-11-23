@@ -616,7 +616,51 @@ impl Store {
     /// current and replaced at once, and its certificates could then be
     /// neither told from the old ones nor revoked.
     pub fn set_issuing(&mut self, certificate_der: &[u8], yubikey: u32) -> Result<(), Error> {
+        self.put_issuing(certificate_der, yubikey, None).map(|_| ())
+    }
+
+    /// Like [`Self::set_issuing`], for whoever showed a person what is to
+    /// happen: the new CA becomes the first issuing CA of the workspace
+    /// (`shown` is `None`), or takes the place of exactly the one whose
+    /// certificate has the SHA-256 fingerprint `shown`.
+    ///
+    /// Another program may have given the workspace a different issuing
+    /// CA since it was shown. This is settled here, under the lock: asked
+    /// before, the answer would be as old as the time it takes to make
+    /// the new CA on its YubiKey. Returns the CA that was replaced, which
+    /// is the one to revoke if its YubiKey was stolen.
+    pub fn set_issuing_in_place_of(
+        &mut self,
+        certificate_der: &[u8],
+        yubikey: u32,
+        shown: Option<&str>,
+    ) -> Result<Option<RetiredCa>, Error> {
+        self.put_issuing(certificate_der, yubikey, Some(shown))
+    }
+
+    /// Adds or replaces the issuing CA. `in_place_of` says what the
+    /// caller expects to find, if it expects anything: no issuing CA, or
+    /// the one with a fingerprint.
+    fn put_issuing(
+        &mut self,
+        certificate_der: &[u8],
+        yubikey: u32,
+        in_place_of: Option<Option<&str>>,
+    ) -> Result<Option<RetiredCa>, Error> {
         let _held = self.hold()?;
+        if let Some(shown) = in_place_of {
+            let current = match self.meta.issuing {
+                Some(_) => Some(self.ca_fingerprints(CaRole::Issuing)?.sha256),
+                None => None,
+            };
+            if current.as_deref() != shown {
+                return Err(Error::Store(
+                    "the issuing CA of this workspace is not the one that was shown: another \
+                     program changed the workspace. Nothing was replaced"
+                        .to_owned(),
+                ));
+            }
+        }
         let issuing = parse(certificate_der)?;
         require_ca(&issuing)?;
         let serial = serial_number(&issuing);
@@ -648,11 +692,10 @@ impl Store {
 
         // A replaced issuing CA stays on file: the certificates it issued
         // remain valid and still need it in their chain.
-        let mut replaces = false;
+        let mut replaced = None;
         if self.meta.issuing.is_some() {
             let previous_der = self.ca_certificate_der(CaRole::Issuing)?;
             if previous_der != certificate_der {
-                replaces = true;
                 let previous = parse(&previous_der)?;
                 let dir = self.dir.join(RETIRED_DIR);
                 fs::create_dir_all(&dir).map_err(|e| io_error(&dir, e))?;
@@ -676,12 +719,18 @@ impl Store {
                 if !self.meta.retired.iter().any(|ca| ca.serial == serial) {
                     self.meta.retired.push(RetiredCa {
                         subject: previous.subject().to_string(),
-                        serial,
+                        serial: serial.clone(),
                         key_id,
                         not_after: previous.validity().not_after.to_datetime(),
                         revoked_at: None,
                     });
                 }
+                replaced = self
+                    .meta
+                    .retired
+                    .iter()
+                    .find(|ca| ca.serial == serial)
+                    .cloned();
             }
         }
 
@@ -700,7 +749,7 @@ impl Store {
             crl_number: lists_so_far,
             ..ca_entry(&issuing, yubikey)
         });
-        if replaces {
+        if replaced.is_some() {
             // The list of CAs first, with the one that is replaced among
             // the retired. Stopped between the two writes, the old
             // certificate is still the one on file, and doing this again
@@ -708,13 +757,14 @@ impl Store {
             // second attempt would find the new certificate in place,
             // retire nothing, and the old CA could never be revoked.
             self.write_toml(META_FILE, &self.meta)?;
-            self.write(&ca_file(CaRole::Issuing), &encode_pem(certificate_der))
+            self.write(&ca_file(CaRole::Issuing), &encode_pem(certificate_der))?;
         } else {
             // A first issuing CA is on file before the list names it: a
             // workspace whose list names one cannot be opened without.
             self.write(&ca_file(CaRole::Issuing), &encode_pem(certificate_der))?;
-            self.write_toml(META_FILE, &self.meta)
+            self.write_toml(META_FILE, &self.meta)?;
         }
+        Ok(replaced)
     }
 
     /// Keeps a YubiKey's proof that the CA key was generated inside it.

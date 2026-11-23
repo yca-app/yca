@@ -2715,3 +2715,92 @@ fn a_replacement_that_was_stopped_halfway_is_finished_by_doing_it_again() {
     again.revoke_retired(&first, at).unwrap();
     assert!(Store::open(&dir).unwrap().retired()[0].revoked_at.is_some());
 }
+
+#[test]
+fn a_replacement_goes_for_the_issuing_ca_that_was_shown_and_no_other() {
+    let mut pki = pki();
+    let at = now();
+    let dir = pki.store.dir().to_owned();
+    // The wizard has been open for a while. What it shows as the issuing
+    // CA to be replaced is the one the workspace had when it was opened.
+    let shown = pki.store.ca_fingerprints(CaRole::Issuing).unwrap().sha256;
+
+    // Meanwhile another program has replaced that one.
+    let mut command = Store::open(&dir).unwrap();
+    let second = pki
+        .root
+        .create_issuing("Second Issuing CA", key(), at)
+        .unwrap();
+    command.set_issuing(second.certificate_der(), 2002).unwrap();
+
+    // The wizard's new CA does not take the place of a CA it never showed.
+    let third = pki
+        .root
+        .create_issuing("Third Issuing CA", key(), at)
+        .unwrap();
+    assert!(matches!(
+        pki.store
+            .set_issuing_in_place_of(third.certificate_der(), 2003, Some(&shown)),
+        Err(Error::Store(_))
+    ));
+    // Nor does it come as the first issuing CA of a workspace that has one.
+    assert!(matches!(
+        pki.store
+            .set_issuing_in_place_of(third.certificate_der(), 2003, None),
+        Err(Error::Store(_))
+    ));
+    let untouched = Store::open(&dir).unwrap();
+    assert_eq!(
+        untouched.ca_certificate_der(CaRole::Issuing).unwrap(),
+        second.certificate_der()
+    );
+    assert_eq!(untouched.retired().len(), 1);
+
+    // In place of the one that is there, and was shown, it goes. What
+    // comes back is the CA it replaced: the one to revoke if the person
+    // said that its YubiKey was stolen, and not whichever was retired
+    // last or first.
+    let shown = untouched.ca_fingerprints(CaRole::Issuing).unwrap().sha256;
+    let replaced = pki
+        .store
+        .set_issuing_in_place_of(third.certificate_der(), 2003, Some(&shown))
+        .unwrap()
+        .expect("an issuing CA was replaced");
+    assert_eq!(replaced.subject, "CN=Second Issuing CA");
+    pki.store.revoke_retired(&replaced.serial, at).unwrap();
+
+    let revoked = |name: &str| {
+        pki.store
+            .retired()
+            .iter()
+            .find(|ca| ca.subject == name)
+            .expect("a replaced issuing CA of that name")
+            .revoked_at
+            .is_some()
+    };
+    assert!(revoked("CN=Second Issuing CA"));
+    assert!(!revoked("CN=Test Issuing CA"));
+}
+
+#[test]
+fn a_first_issuing_ca_is_entered_as_one_only_where_there_is_none() {
+    let at = now();
+    let root = Authority::create_root("Lone Root CA", key(), at).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut store =
+        Store::create(dir.path().join("pki"), root.certificate_der(), ROOT_KEY).unwrap();
+    let issuing = root.create_issuing("First Issuing CA", key(), at).unwrap();
+
+    // A window that believes there is one to replace is behind the folder.
+    assert!(matches!(
+        store.set_issuing_in_place_of(issuing.certificate_der(), ISSUING_KEY, Some("AB CD")),
+        Err(Error::Store(_))
+    ));
+    assert!(store.ca(CaRole::Issuing).is_none());
+
+    let replaced = store
+        .set_issuing_in_place_of(issuing.certificate_der(), ISSUING_KEY, None)
+        .unwrap();
+    assert!(replaced.is_none());
+    assert_eq!(store.everyday_ca(), CaRole::Issuing);
+}

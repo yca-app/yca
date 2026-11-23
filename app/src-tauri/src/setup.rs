@@ -234,14 +234,19 @@ fn make_issuing(
 #[serde(rename_all = "camelCase")]
 pub struct IssuingAddition {
     workspace_path: String,
-    /// PIN of the YubiKey with the workspace's root CA, which signs.
+    /// The root CA the wizard showed as the one that signs: the SHA-256
+    /// fingerprint of its certificate.
+    root: String,
+    /// PIN of the YubiKey with that root CA.
     root_pin: String,
     key: KeySetup,
-    /// The workspace has an issuing CA, and this one is to take its place.
-    /// Said outright, so that a window that is behind the folder cannot
-    /// replace an issuing CA it does not know of.
+    /// The issuing CA the wizard showed as the one to be replaced, by the
+    /// SHA-256 fingerprint of its certificate; none where the workspace
+    /// has no issuing CA yet. Named outright, so that a window that is
+    /// behind the folder cannot replace, or have revoked, an issuing CA
+    /// other than the one the person saw.
     #[serde(default)]
-    replacing: bool,
+    replacing: Option<String>,
     /// Have the root CA revoke the replaced issuing CA: for a YubiKey that
     /// was stolen rather than lost or broken.
     #[serde(default)]
@@ -266,9 +271,22 @@ fn added_issuing(app: &AppHandle, request: IssuingAddition) -> Result<PkiView, F
 
     // Everything that can be wrong without writing comes first.
     let mut store = Store::open(&request.workspace_path)?;
-    match (store.ca(CaRole::Issuing).is_some(), request.replacing) {
-        (true, false) => return Err(other("this workspace already has an issuing CA")),
-        (false, true) => return Err(other("this workspace has no issuing CA to replace")),
+    let current = match store.ca(CaRole::Issuing) {
+        Some(_) => Some(store.ca_fingerprints(CaRole::Issuing)?.sha256),
+        None => None,
+    };
+    match (&current, &request.replacing) {
+        (Some(_), None) => return Err(other("this workspace already has an issuing CA")),
+        (None, Some(_)) => return Err(other("this workspace has no issuing CA to replace")),
+        // Before a key is made for the new one. It is asked once more
+        // when the new CA is entered, by which time minutes may have
+        // passed at the YubiKeys.
+        (Some(now), Some(shown)) if now != shown => {
+            return Err(other(
+                "the issuing CA of this workspace is not the one that was shown: another \
+                 program changed the workspace. Close this and look at it again",
+            ));
+        }
         _ => {}
     }
     let root_serial = store
@@ -284,27 +302,39 @@ fn added_issuing(app: &AppHandle, request: IssuingAddition) -> Result<PkiView, F
     // Two PINs are asked for here, so a refused one names its YubiKey.
     // Opened without a word to the window: the root signs last, once the
     // new key is made, and only then wants its touch.
-    let shown = store.ca_fingerprints(CaRole::Root)?.sha256;
-    let root = locate_ca(&store, CaRole::Root, &shown)
+    let root = locate_ca(&store, CaRole::Root, &request.root)
         .and_then(|key| key.open(Zeroizing::new(request.root_pin)))
         .map_err(|failure| failure.on_key(root_serial))?;
 
     let issuing = make_issuing(app, &root, root_serial, &request.key)
         .map_err(|failure| failure.on_key(new_serial))?;
 
-    let retired_before = store.retired().len();
-    store
-        .set_issuing(issuing.certificate_der(), new_serial)
+    let replaced = store
+        .set_issuing_in_place_of(
+            issuing.certificate_der(),
+            new_serial,
+            request.replacing.as_deref(),
+        )
         .map_err(|e| {
-            // The sidebar offers a connected issuing CA of this root.
-            other(format!(
-                "the issuing CA was created on its YubiKey, but could not be entered into the \
-                 workspace: {e}. Cancel; the sidebar offers to use it as the issuing CA"
-            ))
+            other(if request.replacing.is_some() {
+                format!(
+                    "the issuing CA was created on its YubiKey, but could not be entered into \
+                     the workspace: {e}"
+                )
+            } else {
+                // The sidebar offers a connected issuing CA of this root
+                // to a workspace that has none.
+                format!(
+                    "the issuing CA was created on its YubiKey, but could not be entered into \
+                     the workspace: {e}. Cancel; the sidebar offers to use it as the issuing CA"
+                )
+            })
         })?;
     keep_attestation(&store, CaRole::Issuing, new_serial);
+    // The one that was replaced, which is the one the wizard showed: not
+    // whichever CA was retired last.
     if request.revoke_replaced
-        && let Some(old) = store.retired().get(retired_before).cloned()
+        && let Some(old) = replaced
     {
         store
             .revoke_retired(&old.serial, OffsetDateTime::now_utc())

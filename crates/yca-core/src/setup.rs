@@ -11,7 +11,10 @@ use yubikey::certificate::{CertInfo, Certificate};
 use yubikey::piv::{self, AlgorithmId, SlotId};
 use yubikey::{MgmKey, PinPolicy, TouchPolicy, YubiKey};
 
-use crate::device::{CA_SLOT, FactoryCredentials, SlotKey, device_error, release, slot_holds_key};
+use crate::device::{
+    CA_SLOT, FIRMWARE_TOO_OLD, FactoryCredentials, KeyInSlot, SlotKey, device_error, key_in_slot,
+    release,
+};
 use crate::signer::{checked_pin, open_device};
 use crate::{Authority, Error, SigningKey, YubiKeySigner};
 
@@ -160,8 +163,16 @@ fn new_ca_key(serial: u32, pin: &str, ca: &NewCa<'_>) -> Result<YubiKeySigner, E
     }
     let mut yubikey = open_device(serial)?;
 
-    // Everything that can fail goes before the point of no return.
-    if !ca.replace_existing && slot_in_use(&mut yubikey) {
+    // Everything that can fail goes before the point of no return. First
+    // of all a YubiKey that does not say what its slot holds: no answer is
+    // not an empty slot, and a key that is written to without knowing
+    // could be somebody's CA. Nor could a CA on it be used afterwards.
+    let in_slot = key_in_slot(&mut yubikey);
+    if in_slot == KeyInSlot::Untold {
+        return Err(Error::Device(FIRMWARE_TOO_OLD.to_owned()));
+    }
+    let in_use = in_slot == KeyInSlot::Yes || Certificate::read(&mut yubikey, CA_SLOT).is_ok();
+    if !ca.replace_existing && in_use {
         return Err(Error::SlotInUse);
     }
     // A CA key behind the PIN every YubiKey ships with protects nothing.
@@ -219,12 +230,6 @@ pub fn attest_ca_on_yubikey(serial: u32) -> Result<Option<Attestation>, Error> {
     // Only looked at: a signer that holds this YubiKey stays connected.
     release(yubikey);
     attestation
-}
-
-/// Whether slot 9c holds a certificate or a key. A look at the connected
-/// YubiKeys says the same of it: [`crate::device::Device::signature_slot_in_use`].
-fn slot_in_use(yubikey: &mut YubiKey) -> bool {
-    Certificate::read(yubikey, CA_SLOT).is_ok() || slot_holds_key(yubikey)
 }
 
 fn read_ca_certificate(yubikey: &mut YubiKey) -> Result<Vec<u8>, Error> {

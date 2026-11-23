@@ -1192,11 +1192,13 @@ function Welcome({
                       <span className={cn("block font-medium", leftOut && "text-muted-foreground")}>
                         {key.ca
                           ? t.holdsCa(t.role[key.ca.role], commonName(key.ca.subject))
-                          : key.keyWithoutCertificate
-                            ? t.holdsLoneKey
-                            : key.slotInUse
-                              ? t.holdsNotCa
-                              : t.holdsNoCa}
+                          : key.tooOld
+                            ? t.tooOld
+                            : key.keyWithoutCertificate
+                              ? t.holdsLoneKey
+                              : key.slotInUse
+                                ? t.holdsNotCa
+                                : t.holdsNoCa}
                       </span>
                       {/* Which key it is: two that look alike are told apart
                           by serial number, and what one of them can do by
@@ -1210,6 +1212,11 @@ function Welcome({
                       {leftOut && key.ca?.role === "issuing" && (
                         <span className="mt-1 block text-xs text-amber-700 dark:text-amber-400">
                           {t.leftOut}
+                        </span>
+                      )}
+                      {key.tooOld && (
+                        <span className="mt-1 block text-xs text-amber-700 dark:text-amber-400">
+                          {t.tooOldAbout}
                         </span>
                       )}
                     </span>

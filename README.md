@@ -77,7 +77,7 @@ The keys of the CA are never in it. The private keys of the certificates you iss
 ## Requirements
 
 - A Mac with Apple silicon and macOS 13.3 or newer. The released app does not run on a Mac with Intel; built from source it may, but that has not been tried.
-- One or two YubiKeys of the 5 series. The blue Security Key has no PIV and will not work.
+- One or two YubiKeys of the 5 series with firmware 5.3 or newer, which the app shows beside each key. An older one does not say what it holds, and the app puts no CA on it. The blue Security Key has no PIV and will not work.
 
 ## Installing
 

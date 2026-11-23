@@ -39,6 +39,11 @@ pub struct Device {
     /// finished leaves behind, or a key some other tool made there.
     /// Firmware older than 5.3 cannot tell, and then this is `false`.
     pub key_without_certificate: bool,
+    /// Whether the YubiKey says what is in its slots and whether its PIN
+    /// is still the factory one, which firmware 5.3 and newer does. One
+    /// that does not is neither given a CA nor signed with: it may hold a
+    /// key nobody is told about, behind the PIN every YubiKey ships with.
+    pub describes_its_keys: bool,
     /// The CA held in slot 9c, if there is one.
     pub ca: Option<StoredCa>,
 }
@@ -48,6 +53,17 @@ impl Device {
     /// at RSA 2048.
     pub fn supports_large_rsa(&self) -> bool {
         self.firmware >= (5, 7, 0)
+    }
+
+    /// Refuses a YubiKey whose firmware does not say what is in its
+    /// slots, before a CA on it is taken over or anything is written to
+    /// it.
+    pub fn require_new_enough(&self) -> Result<(), Error> {
+        if self.describes_its_keys {
+            Ok(())
+        } else {
+            Err(Error::Device(FIRMWARE_TOO_OLD.to_owned()))
+        }
     }
 
     /// Whether the slot yca uses for a CA key (9c) already holds something:
@@ -307,8 +323,9 @@ fn describe(yubikey: &mut YubiKey, reader: String) -> Result<Device, Error> {
     };
     // A key that was made for a CA and never got its certificate is in no
     // list of certificates, and still in the way of the next CA.
+    let in_slot = key_in_slot(yubikey);
     let key_without_certificate =
-        !keys.iter().any(|key| key.slot() == CA_SLOT) && slot_holds_key(yubikey);
+        !keys.iter().any(|key| key.slot() == CA_SLOT) && in_slot == KeyInSlot::Yes;
     let pin_attempts_left = yubikey.get_pin_retries().map_err(device_error)?;
     let factory = FactoryCredentials::read(yubikey);
 
@@ -320,14 +337,34 @@ fn describe(yubikey: &mut YubiKey, reader: String) -> Result<Device, Error> {
         factory,
         occupied_slots,
         key_without_certificate,
+        describes_its_keys: in_slot != KeyInSlot::Untold,
         ca,
     })
 }
 
-/// Whether slot 9c holds a key, with a certificate or without. Needs no
-/// PIN. Firmware older than 5.3 cannot say, which counts as none.
-pub(crate) fn slot_holds_key(yubikey: &mut YubiKey) -> bool {
-    piv::metadata(yubikey, CA_SLOT).is_ok()
+/// What is said to someone whose YubiKey cannot describe its keys.
+pub(crate) const FIRMWARE_TOO_OLD: &str = "this YubiKey's firmware is too old to describe its \
+                                           keys (5.3 or newer is needed)";
+
+/// What a YubiKey answers when asked whether slot 9c holds a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyInSlot {
+    Yes,
+    No,
+    /// It did not say. Firmware older than 5.3 has no answer to the
+    /// question, and no answer is not a no: the slot may hold a key all
+    /// the same.
+    Untold,
+}
+
+/// Asks whether slot 9c holds a key, with a certificate or without. Needs
+/// no PIN.
+pub(crate) fn key_in_slot(yubikey: &mut YubiKey) -> KeyInSlot {
+    match piv::metadata(yubikey, CA_SLOT) {
+        Ok(_) => KeyInSlot::Yes,
+        Err(yubikey::Error::NotFound) => KeyInSlot::No,
+        Err(_) => KeyInSlot::Untold,
+    }
 }
 
 /// Describes the certificate in slot 9c, or `None` if it is not a CA
@@ -546,6 +583,7 @@ mod tests {
             factory: FactoryCredentials::default(),
             occupied_slots: Vec::new(),
             key_without_certificate: false,
+            describes_its_keys: true,
             ca: role.map(|role| StoredCa {
                 subject: "CN=Test".to_owned(),
                 role,
@@ -599,6 +637,19 @@ mod tests {
         // Asking for everyday issuing must not end up signing with the root.
         assert!(both.select_ca(CaRole::Issuing, Some(1)).is_err());
         assert!(both.select_ca(CaRole::Issuing, Some(9)).is_err());
+    }
+
+    #[test]
+    fn a_yubikey_that_does_not_describe_its_keys_is_not_used() {
+        let current = device(1, Some(CaRole::Root));
+        assert!(current.require_new_enough().is_ok());
+        // Firmware before 5.3: what it holds is anybody's guess.
+        let old = Device {
+            firmware: (5, 2, 7),
+            describes_its_keys: false,
+            ..device(2, None)
+        };
+        assert!(matches!(old.require_new_enough(), Err(Error::Device(_))));
     }
 
     #[test]

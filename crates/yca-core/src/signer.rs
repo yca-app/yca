@@ -9,7 +9,9 @@ use yubikey::{Serial, YubiKey};
 use zeroize::Zeroizing;
 
 use crate::Error;
-use crate::device::{CA_SLOT, SlotKey, SlotKeyError, algorithm_name, device_error, read_slot_key};
+use crate::device::{
+    CA_SLOT, FIRMWARE_TOO_OLD, SlotKey, SlotKeyError, algorithm_name, device_error, read_slot_key,
+};
 
 /// A PIV PIN is six to eight characters long.
 const PIN_LENGTH: std::ops::RangeInclusive<usize> = 6..=8;
@@ -40,10 +42,7 @@ impl YubiKeySigner {
         let pin = checked_pin(pin)?;
         let mut yubikey = open_device(serial)?;
         let key = read_slot_key(&mut yubikey).map_err(|e| match e {
-            SlotKeyError::NotReported => Error::Device(
-                "this YubiKey's firmware is too old to describe its keys (5.3 or newer is needed)"
-                    .to_owned(),
-            ),
+            SlotKeyError::NotReported => Error::Device(FIRMWARE_TOO_OLD.to_owned()),
             SlotKeyError::Other(e) => e,
         })?;
         // Fail on an unsupported key before spending a PIN attempt.

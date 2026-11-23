@@ -45,6 +45,9 @@ export interface Device {
   /** What it holds is a key without a certificate, left by a CA that was
    *  not finished. */
   keyWithoutCertificate: boolean;
+  /** Its firmware does not say what its slots hold (older than 5.3). Such
+   *  a YubiKey gets no CA, and a CA on it is not used. */
+  tooOld: boolean;
   /** Other PIV slots that hold a certificate, which a reset destroys too. */
   otherSlots: string[];
   ca: DeviceCa | null;
@@ -778,7 +781,8 @@ let previewAlone = false;
 // What is plugged in before a PKI is open, chosen in the address bar:
 // `?keys=stranger` is a root with the issuing CA of some other PKI,
 // `?keys=root` the root alone, `?keys=roots` two roots, `?keys=new` two
-// YubiKeys fresh from the box; anything else is a root with its own
+// YubiKeys fresh from the box, `?keys=old` one of them with firmware too
+// old for a CA; anything else is a root with its own
 // issuing CA. `?keys=odd` is that too, with what a CA taken over from
 // another tool may bring: an issuing YubiKey that still has its factory
 // PIN, and a root CA whose key was imported rather than made inside. `?keys=lost` is that too, until the PKI is open: then the
@@ -800,6 +804,7 @@ const sampleKey = (
   factoryPin: false,
   slotInUse: true,
   keyWithoutCertificate: false,
+  tooOld: false,
   otherSlots: [],
   ca: {
     role,
@@ -1157,8 +1162,18 @@ const sample = {
       factoryPin: true,
       slotInUse: false,
       keyWithoutCertificate: false,
+      tooOld: false,
       otherSlots: [],
       ca: null,
+    });
+    // An older YubiKey: its firmware does not say what it holds, and so
+    // not whether its PIN is the factory one either.
+    const old = (serial: number): Device => ({
+      ...fresh(serial),
+      firmware: "5.2.7",
+      factoryCredentials: false,
+      factoryPin: false,
+      tooOld: true,
     });
     // Given a PIN by then, and left with a key that has no certificate.
     const unfinished = (key: Device): Device => ({
@@ -1171,6 +1186,7 @@ const sample = {
     });
     const before: Record<string, Device[]> = {
       new: [fresh(30000001), fresh(30000002)],
+      old: [fresh(30000001), old(30000003)],
       stranger: [sampleKey(20000003, "issuing", "Lab Issuing CA", 900, false), root],
       root: [root],
       // With two roots there is no telling which one an issuing CA is

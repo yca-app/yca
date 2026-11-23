@@ -167,6 +167,7 @@ pub(crate) mod fixtures {
             factory: FactoryCredentials::default(),
             occupied_slots: Vec::new(),
             key_without_certificate: false,
+            describes_its_keys: true,
             ca: Some(StoredCa {
                 subject: "CN=Test".to_owned(),
                 role,

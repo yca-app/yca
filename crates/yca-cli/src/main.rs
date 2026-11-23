@@ -814,6 +814,13 @@ fn devices() -> Result<()> {
         say!("  firmware:      {major}.{minor}.{patch}");
         say!("  reader:        {}", key.reader);
         say!("  PIN attempts:  {} left", key.pin_attempts_left);
+        if !key.describes_its_keys {
+            say!(
+                "  WARNING:       this firmware does not say what the key holds or whether \
+                 its PIN is the factory one. yca puts no CA on it and does not sign with one \
+                 on it; 5.3 or newer is needed"
+            );
+        }
         if key.factory.any() {
             let still_factory: Vec<_> = [
                 (key.factory.pin, "PIN"),
@@ -1046,6 +1053,8 @@ fn adopt(
         let device = found
             .select_ca(CaRole::Root, root_device)
             .context("starting a workspace folder needs the YubiKey with the root CA connected")?;
+        // A CA that could not be signed with is not worth a workspace.
+        device.require_new_enough()?;
         let ca = device
             .ca
             .as_ref()
@@ -1063,6 +1072,7 @@ fn adopt(
 
     match found.select_ca(CaRole::Issuing, issuing_device) {
         Ok(device) => {
+            device.require_new_enough()?;
             let ca = device
                 .ca
                 .as_ref()

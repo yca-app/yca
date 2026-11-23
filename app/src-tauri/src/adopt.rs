@@ -21,6 +21,8 @@ pub fn adopt_pki(lock: tauri::State<'_, KeyLock>, path: String) -> Result<PkiVie
     let device = found
         .select_ca(CaRole::Root, None)
         .map_err(|e| e.to_string())?;
+    // A CA that could not be signed with is not worth a workspace.
+    device.require_new_enough().map_err(|e| e.to_string())?;
     let ca = device
         .ca
         .as_ref()
@@ -56,6 +58,7 @@ pub fn adopt_issuing(
     let device = found
         .select_ca(CaRole::Issuing, Some(serial))
         .map_err(|e| e.to_string())?;
+    device.require_new_enough().map_err(|e| e.to_string())?;
     let ca = device
         .ca
         .as_ref()
@@ -74,7 +77,7 @@ pub fn adopt_issuing(
 fn add_connected_issuing(store: &mut Store, found: &Devices) -> bool {
     for device in &found.usable {
         let Some(ca) = &device.ca else { continue };
-        if ca.role != CaRole::Issuing {
+        if ca.role != CaRole::Issuing || !device.describes_its_keys {
             continue;
         }
         // The store itself checks the signature against its root.

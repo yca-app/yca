@@ -38,6 +38,10 @@ pub struct DeviceView {
     /// What slot 9c holds is a key without a certificate, left by a CA
     /// that was not finished. Nothing of use can be signed with it.
     pub key_without_certificate: bool,
+    /// The firmware does not say what is in the key's slots (older than
+    /// 5.3). Such a key gets no CA, and a CA on it is not used: what the
+    /// other fields say of it is only what could be read.
+    pub too_old: bool,
     /// Other PIV slots that hold a certificate, which a reset destroys
     /// along with the CA. The key's own attestation certificate is not
     /// among them: a reset leaves it.
@@ -229,6 +233,7 @@ pub fn devices_view(
                 factory_pin: device.factory.pin == Some(true),
                 slot_in_use: device.signature_slot_in_use() || device.ca.is_some(),
                 key_without_certificate: device.key_without_certificate,
+                too_old: !device.describes_its_keys,
                 other_slots: device
                     .occupied_slots
                     .iter()

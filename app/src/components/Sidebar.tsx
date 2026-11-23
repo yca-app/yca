@@ -213,12 +213,19 @@ export function Sidebar({
                   <p className="pr-6 pl-6">
                     {device.ca
                       ? t.holdsOtherCa(commonName(device.ca.subject))
-                      : device.keyWithoutCertificate
-                        ? t.holdsLoneKey
-                        : device.slotInUse
-                          ? t.holdsNotCa
-                          : t.holdsNoCa}
+                      : device.tooOld
+                        ? t.tooOld
+                        : device.keyWithoutCertificate
+                          ? t.holdsLoneKey
+                          : device.slotInUse
+                            ? t.holdsNotCa
+                            : t.holdsNoCa}
                   </p>
+                  {device.tooOld && (
+                    <p className="mt-1 pr-6 pl-6 text-amber-700 dark:text-amber-400">
+                      {t.tooOldAbout}
+                    </p>
+                  )}
                 </li>
               ))}
               {unusable.map((reader) => (

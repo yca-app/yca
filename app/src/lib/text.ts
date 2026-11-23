@@ -99,6 +99,15 @@ export const t = {
   // the YubiKey named on the line above.
   keyFresh: "It is new. You will choose its PIN.",
   keyEmpty: "This YubiKey has an empty CA slot",
+  // A YubiKey whose firmware does not say what its slots hold, nor whether
+  // its PIN is still the factory one: older than 5.3. It gets no CA, and a
+  // CA on it is not used. Short, for one line beside the key in the
+  // wizard's list; then as a line of its own where keys are listed, with
+  // why under it.
+  keyTooOld: "Firmware 5.3 or newer is needed.",
+  tooOld: "This YubiKey's firmware is too old",
+  tooOldAbout:
+    "The app needs firmware 5.3 or newer. An older YubiKey does not say what it holds, so the app puts no CA on it and does not sign with one.",
   // Followed by the tag with the key's serial number.
   createOn: (role: string, name: string) => `${role} “${name}” on YubiKey`,
   newPin: "New PIN",

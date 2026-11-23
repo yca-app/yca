@@ -579,13 +579,15 @@ function CaChoice({
               {keys.map((key) => {
                 const elsewhere = key.serial === taken;
                 const checked = key.serial === chosen;
+                // A YubiKey that does not say what it holds gets no CA.
+                const unfit = elsewhere || key.tooOld;
                 return (
                   <button
                     key={key.serial}
                     type="button"
                     role="radio"
                     aria-checked={checked}
-                    disabled={elsewhere}
+                    disabled={unfit}
                     // A second click takes the choice back. With two keys,
                     // each chosen for one CA, neither could otherwise be
                     // given to the other any more.
@@ -640,6 +642,9 @@ function KeyState({
 }) {
   if (elsewhere !== null) {
     return <span className="mt-0.5 block text-xs text-muted-foreground">{elsewhere}</span>;
+  }
+  if (device.tooOld) {
+    return <span className="mt-0.5 block text-xs text-muted-foreground">{t.keyTooOld}</span>;
   }
   if (device.slotInUse) {
     return (

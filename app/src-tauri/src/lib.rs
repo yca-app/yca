@@ -370,6 +370,45 @@ mod tests {
     }
 
     #[test]
+    fn the_window_is_told_when_a_ca_key_signs_without_a_touch_of_its_own() {
+        use yca_core::device::CaKeyInfo;
+
+        let at = OffsetDateTime::now_utc();
+        let root = Authority::create_root("Root", key(), at).unwrap();
+        let with_key = |serial, touch_required, touch_every_time| {
+            let mut device = yubikey(serial, CaRole::Root, &root);
+            device.ca.as_mut().unwrap().key = Some(CaKeyInfo {
+                algorithm: "ECC P-384",
+                generated_on_device: Some(true),
+                pin_for_every_signature: true,
+                touch_required,
+                touch_every_time,
+                matches_certificate: true,
+            });
+            device
+        };
+        let view = devices_view(
+            Devices {
+                // As the app makes it; as a tool that asks for no touch
+                // makes it; and one that remembers a touch for a while.
+                usable: vec![
+                    with_key(1, true, true),
+                    with_key(2, false, false),
+                    with_key(3, true, false),
+                ],
+                unusable: Vec::new(),
+            },
+            None,
+            None,
+        );
+        let shown = serde_json::to_value(&view).unwrap();
+        let every_time = |at: usize| shown["usable"][at]["ca"]["touchEveryTime"].clone();
+        assert_eq!(every_time(0), true);
+        assert_eq!(every_time(1), false);
+        assert_eq!(every_time(2), false);
+    }
+
+    #[test]
     fn a_pki_folder_is_shown_newest_first_with_its_cas_and_statuses() {
         let at = OffsetDateTime::now_utc();
         let root = Authority::create_root("Test Root CA", key(), at).unwrap();

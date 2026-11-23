@@ -66,6 +66,11 @@ pub struct DeviceCaView {
     pub algorithm: Option<&'static str>,
     pub generated_on_device: Option<bool>,
     pub touch_required: Option<bool>,
+    /// `false` for a key that signs without a touch of its own for every
+    /// signature: with none at all, or with one it remembers for a while.
+    /// A key the app made always wants one; a CA taken over from another
+    /// tool has the key that tool made.
+    pub touch_every_time: Option<bool>,
     /// `false` when the key in the slot is not the key of the certificate.
     pub key_matches_certificate: bool,
     /// For an issuing CA: whether the root in question signed it. That
@@ -264,6 +269,7 @@ pub fn devices_view(
                     algorithm: ca.key.as_ref().map(|key| key.algorithm),
                     generated_on_device: ca.key.as_ref().and_then(|key| key.generated_on_device),
                     touch_required: ca.key.as_ref().map(|key| key.touch_required),
+                    touch_every_time: ca.key.as_ref().map(|key| key.touch_every_time),
                     key_matches_certificate: ca
                         .key
                         .as_ref()

@@ -12,7 +12,7 @@ It is meant for a home lab or a small office, where a public CA is of no use and
 ## What it does
 
 - **Creates the CA on YubiKeys.** A root CA on one YubiKey, which you keep in a safe, and an issuing CA on a second one for everyday use. One YubiKey alone works too, with the root CA signing everything.
-- **Takes over a CA you already have** on YubiKeys from another tool. Nothing is written to the keys.
+- **Takes over a CA you already have** on YubiKeys from another tool. Nothing is written to the keys, so such a CA keeps the key that tool made: the app says so if a copy of it may exist outside the YubiKey, or if it signs without a touch.
 - **Issues certificates by what they are for:** a web server, a VPN gateway, a VPN client, a TLS client.
 - **Hands them over as the files the device's upload form asks for,** and nothing else to pick from: `fullchain.crt` and `private-key.key` for a form with a field for the certificate and one for the key; `certificate.crt`, `intermediate-ca.crt` and `private-key.key` for one with a field each; one password-protected `certificate.p12` for a form with a single file, and for laptops and phones. If the form turns out to ask for something else, the files are written again in the other form without issuing anything.
 - **Signs a device's own request (CSR)** when the device keeps its private key.
@@ -23,7 +23,7 @@ It is meant for a home lab or a small office, where a public CA is of no use and
 - **Shows how to make your devices trust the CA.** The root CA certificate is in the workspace as a file a Mac, a Windows PC, an iPhone or an Android phone can open, and the app has the steps for each of them, with the fingerprints to compare.
 - **Replaces a lost issuing CA.** The root CA signs a new one on another YubiKey; your devices go on trusting the root. If the old YubiKey was stolen, the root CA revokes the old issuing CA as well.
 
-Every signature needs the PIN of the YubiKey and a touch.
+Every signature needs the PIN of the YubiKey, and with a CA the app made, a touch as well.
 
 ## What it looks like
 
@@ -157,6 +157,7 @@ An agent that can run commands on your Mac can run `yca` itself, as it can run a
 - **The libraries have not been audited,** in particular the one that talks to the YubiKey, which is used in a pre-release version because of firmware 5.7 and later.
 - **The workspace holds private keys of the certificates you issue.** Whoever reads it can pose as those devices until you revoke them. They cannot issue anything: the keys of the CA are only on the YubiKeys.
 - **An agent can ask, but not sign.** A program that reaches `yca mcp` or the app's socket can make the window show a signing dialog. Nothing is signed unless you type the PIN and touch the key, so read what the dialog says before you do.
+- **A CA from another tool is as safe as that tool made it.** The app makes a CA key inside the YubiKey and has it ask for a touch with every signature. A key that was put into the YubiKey from outside may have copies elsewhere, and one that was made without that rule signs with the PIN alone. The app takes such a CA over and says which of the two is the case, on the start screen and beside the CA.
 - **The app trusts its workspace folder.** It checks that the CA certificates in it belong together and match the connected YubiKeys, but the list of issued and revoked certificates is not signed.
 - **An update is as good as the project's repository.** Releases are built on GitHub, where the key that updates are signed with is kept as well. The app installs nothing that is not signed with that key, and nothing unasked, but whoever controls the repository can release an update.
 - A YubiKey's statement that a key was made inside it is kept, but not yet checked against Yubico's own root certificate.

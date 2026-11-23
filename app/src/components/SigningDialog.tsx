@@ -294,6 +294,11 @@ export function SigningDialog({
   const attemptsLeft = (devices?.usable ?? []).find(
     (device) => device.serial === signer?.yubikey,
   )?.pinAttemptsLeft;
+  // A CA taken over from another tool may have a key that signs without
+  // a touch. What the dialog says of the touch has to be true of this key.
+  const signsWithoutTouch = (devices?.usable ?? []).some(
+    (device) => device.serial === signer?.yubikey && device.ca?.touchEveryTime === false,
+  );
   // The CA this dialog shows as the one that signs, by its fingerprint.
   // The app signs with no other, whatever the workspace says by then.
   const shownCa = signer?.sha256 ?? "";
@@ -554,7 +559,7 @@ export function SigningDialog({
             <Bot className="mt-0.5 size-4 shrink-0 text-primary" />
             <span>
               <span className="font-medium">{t.agent.asks(task.asked.from)}</span>{" "}
-              {t.agent.checkSign}
+              {signsWithoutTouch ? t.agent.checkSignNoTouch : t.agent.checkSign}
             </span>
           </p>
         )}

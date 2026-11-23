@@ -193,6 +193,10 @@ pub struct CaKeyInfo {
     pub pin_for_every_signature: bool,
     /// Whether signing needs a touch.
     pub touch_required: bool,
+    /// Whether every signature needs a touch of its own. A key made by
+    /// yca does. One that another tool made may want none, or remember
+    /// a touch for a while and sign again within it.
+    pub touch_every_time: bool,
     /// Whether the key in the slot is the one the CA certificate names. If
     /// it is not, the slot was only half overwritten at some point and
     /// nothing signed with it would validate.
@@ -411,6 +415,7 @@ pub(crate) struct SlotKey {
     /// The public key as it appears inside a SubjectPublicKeyInfo.
     pub(crate) public_key: Vec<u8>,
     pub(crate) touch_required: bool,
+    touch_every_time: bool,
     pin_for_every_signature: bool,
     generated_on_device: Option<bool>,
 }
@@ -423,6 +428,7 @@ impl SlotKey {
             algorithm,
             public_key,
             touch_required: true,
+            touch_every_time: true,
             pin_for_every_signature: true,
             generated_on_device: Some(true),
         }
@@ -458,6 +464,7 @@ impl SlotKey {
             generated_on_device: self.generated_on_device,
             pin_for_every_signature: self.pin_for_every_signature,
             touch_required: self.touch_required,
+            touch_every_time: self.touch_every_time,
             matches_certificate,
         }
     }
@@ -508,6 +515,9 @@ pub(crate) fn read_slot_key(yubikey: &mut YubiKey) -> Result<SlotKey, SlotKeyErr
         algorithm,
         public_key,
         touch_required: touch_policy != TouchPolicy::Never,
+        // Nothing but "always" is a touch for every signature: a key that
+        // remembers a touch signs again without one.
+        touch_every_time: touch_policy == TouchPolicy::Always,
         pin_for_every_signature: pin_policy == PinPolicy::Always,
         generated_on_device: metadata.origin.map(|origin| origin == Origin::Generated),
     })

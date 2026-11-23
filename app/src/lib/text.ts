@@ -210,6 +210,9 @@ export const t = {
   agent: {
     asks: (from: string) => `${from} asks for this.`,
     checkSign: "Check it before you sign: nothing is signed without your PIN and your touch.",
+    // The same for a CA whose key another tool made without asking for a
+    // touch: the PIN is then all that stands before the signature.
+    checkSignNoTouch: "Check it before you sign: nothing is signed without your PIN.",
     checkDelete: "Check it before you agree.",
     noWorkspace: "No workspace is open in the window; name the workspace folder.",
     noCertificate: (serial: string) =>
@@ -416,6 +419,9 @@ export const t = {
     "The key of this CA was made inside its YubiKey and cannot be copied out. The YubiKey's own proof of that is kept in the workspace folder.",
   keyMadeInsideSaid: "The YubiKey says that the key of this CA was made inside it.",
   keyImported: "This key was put into the YubiKey from outside. Copies of it may exist.",
+  // A CA key that another tool made, without telling the YubiKey to ask
+  // for a touch every time. A key the app makes always asks.
+  keyTouchNotAlways: "This key does not ask for a touch every time it signs.",
   rootShouldRest: "Not needed for everyday work. Safer unplugged.",
   otherKeys: "Other YubiKeys",
   holdsOtherCa: (subject: string) =>

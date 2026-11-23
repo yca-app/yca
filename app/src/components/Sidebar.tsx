@@ -391,6 +391,7 @@ function CaCard({
   if (device && !holdsThisCa) warnings.push(device.ca ? t.wrongKey : t.key.holdsNothing);
   if (device && holdsThisCa && !device.ca?.keyMatchesCertificate) warnings.push(t.keyMismatch);
   if (holdsThisCa && device?.ca?.generatedOnDevice === false) warnings.push(t.keyImported);
+  if (holdsThisCa && device?.ca?.touchEveryTime === false) warnings.push(t.keyTouchNotAlways);
   const pinLocked = device !== undefined && device.pinAttemptsLeft === 0;
   if (device && device.pinAttemptsLeft < 3 && !pinLocked) {
     warnings.push(t.pinAttempts(device.pinAttemptsLeft));

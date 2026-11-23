@@ -20,7 +20,7 @@ Fixes go into the next release. Only the latest release is supported.
 
 A report is a vulnerability if it breaks one of these:
 
-- **A CA key never exists outside its YubiKey,** and nothing is signed with it without the PIN and a touch at the key.
+- **A CA key that the app made never exists outside its YubiKey,** and nothing is signed with it without the PIN and a touch at the key. A CA taken over from another tool has the key that tool made, and nothing is signed with it without the PIN.
 - **What the signing dialog shows is what gets signed.** That goes for requests from the window, the command line and AI agents alike.
 - **No PIN, PUK or password goes to a program.** Nothing in the command line's JSON output, the MCP server or the app's socket takes or gives out a secret.
 - **A YubiKey is written to only where a CA needs it:** PIV slot 9c, and the PIN, PUK and management key. The other PIV slots are touched by nothing but the reset of the PIV application, which says what it destroys and asks for the serial number. FIDO2, OpenPGP and OATH are never touched.
@@ -35,6 +35,7 @@ These are known limits, described in the [README](README.md#what-to-keep-in-mind
 - The workspace folder holds the private keys of the certificates the app made keys for. Whoever can read the folder can pose as those devices until the certificates are revoked.
 - The list of issued and revoked certificates in the workspace is not signed. Whoever can change the folder can hide a revocation. They cannot issue anything.
 - A program running as you can make the window show a signing dialog. It cannot type the PIN or touch the key.
+- A CA that was taken over from another tool keeps its key. If that key was put into the YubiKey from outside, copies of it may exist, and if it was made without asking for a touch, it signs with the PIN alone. The app says so where it shows the CA, and does not refuse it.
 - A YubiKey's statement that a key was made inside it is kept, but not checked against Yubico's root certificate.
 - The libraries the app is built on have not been audited, and the one that talks to the YubiKey is used in a pre-release version.
 - Releases are built on GitHub, and the key that updates are signed with is kept there. Whoever controls the project's repository can release an update.

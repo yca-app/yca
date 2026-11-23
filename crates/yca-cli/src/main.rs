@@ -856,10 +856,12 @@ fn devices() -> Result<()> {
                             } else {
                                 "PIN once"
                             },
-                            if info.touch_required {
+                            if info.touch_every_time {
                                 " and a touch"
+                            } else if info.touch_required {
+                                " and a touch, which the key remembers for a while"
                             } else {
-                                ""
+                                ", no touch"
                             }
                         );
                     }
@@ -1067,6 +1069,7 @@ fn adopt(
             device.serial
         );
         keep_attestation(&store, CaRole::Root, device.serial)?;
+        say_what_its_key_lacks(ca);
         store
     };
 
@@ -1104,6 +1107,7 @@ fn adopt(
                     device.serial
                 );
                 keep_attestation(&store, CaRole::Issuing, device.serial)?;
+                say_what_its_key_lacks(ca);
             }
         }
         Err(e) if issuing_device.is_some() => return Err(e.into()),
@@ -1115,15 +1119,46 @@ fn adopt(
     answer_with_workspace(&store)
 }
 
+/// Keeps the YubiKey's own statement that the CA key was made inside it,
+/// where it makes one. A key that was put in from outside gets none, and
+/// that is no reason to stop: the workspace is made by then.
 fn keep_attestation(store: &Store, role: CaRole, serial: u32) -> Result<()> {
-    match yca_core::attest_ca_on_yubikey(serial)? {
-        Some(attestation) => {
+    match yca_core::attest_ca_on_yubikey(serial) {
+        Ok(Some(attestation)) => {
             store.save_attestation(role, &attestation)?;
             say!("               its key was generated inside the YubiKey (attestation kept)");
         }
-        None => say!("               this firmware cannot attest where the key was generated"),
+        Ok(None) => {
+            say!("               this firmware cannot attest where the key was generated")
+        }
+        Err(_) => say!(
+            "               the YubiKey does not attest this key, as it does not one that was \
+             put in from outside"
+        ),
     }
     Ok(())
+}
+
+/// Says of a CA that is taken over what its key does not do that a key
+/// made by yca does: stay in the YubiKey alone, and want a touch for every
+/// signature. Another tool made it, and it stays as that tool made it.
+fn say_what_its_key_lacks(ca: &device::StoredCa) {
+    let Some(key) = &ca.key else { return };
+    if key.generated_on_device == Some(false) {
+        say!("               NOTE: its key was put into the YubiKey from outside; copies of it");
+        say!("               may exist");
+    }
+    if !key.touch_every_time {
+        say!("               NOTE: its key does not want a touch for every signature; it signs");
+        say!(
+            "               with the PIN{}",
+            if key.touch_required {
+                " and a touch it remembers for a while"
+            } else {
+                " alone"
+            }
+        );
+    }
 }
 
 fn list(dir: &Path, group: Option<&str>) -> Result<()> {

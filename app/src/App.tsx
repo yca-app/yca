@@ -1214,6 +1214,18 @@ function Welcome({
                           {t.leftOut}
                         </span>
                       )}
+                      {/* What the key of a CA from another tool lacks, said
+                          before the CA is taken over and not only after. */}
+                      {key.ca?.generatedOnDevice === false && (
+                        <span className="mt-1 block text-xs text-amber-700 dark:text-amber-400">
+                          {t.keyImported}
+                        </span>
+                      )}
+                      {key.ca?.touchEveryTime === false && (
+                        <span className="mt-1 block text-xs text-amber-700 dark:text-amber-400">
+                          {t.keyTouchNotAlways}
+                        </span>
+                      )}
                       {key.tooOld && (
                         <span className="mt-1 block text-xs text-amber-700 dark:text-amber-400">
                           {t.tooOldAbout}

@@ -19,6 +19,9 @@ export interface DeviceCa {
   algorithm: string | null;
   generatedOnDevice: boolean | null;
   touchRequired: boolean | null;
+  /** `false` for a key that signs without a touch of its own for every
+   *  signature. A key the app made always wants one. */
+  touchEveryTime: boolean | null;
   keyMatchesCertificate: boolean;
   /**
    * For an issuing CA: whether the root in question signed it. That root
@@ -833,6 +836,7 @@ const sampleKey = (
     algorithm: "ECC P-384",
     generatedOnDevice: true,
     touchRequired: true,
+    touchEveryTime: true,
     keyMatchesCertificate: true,
     signedByRoot,
     matchesWorkspace: previewHasPki ? true : null,
@@ -1179,6 +1183,9 @@ const sample = {
       issuing.factoryPuk = unprotected;
       issuing.factoryManagementKey = unprotected;
       root.ca!.generatedOnDevice = false;
+      // And made by a tool that asks for no touch, as most do unless told.
+      root.ca!.touchRequired = false;
+      root.ca!.touchEveryTime = false;
     }
     // Fresh from the box: nothing on it and the PIN everybody knows.
     const fresh = (serial: number): Device => ({

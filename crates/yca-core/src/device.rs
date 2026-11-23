@@ -13,7 +13,7 @@ use yubikey::piv::{self, AlgorithmId, Key, ManagementSlotId, Origin, SlotAlgorit
 use yubikey::reader::Context;
 use yubikey::{PinPolicy, TouchPolicy, YubiKey};
 
-use crate::Error;
+use crate::{Error, Turn};
 
 /// The PIV slot yca keeps a CA key in: 9c, "Digital Signature".
 pub(crate) const CA_SLOT: SlotId = SlotId::Signature;
@@ -256,8 +256,26 @@ impl Devices {
     }
 }
 
-/// Lists connected YubiKeys without changing anything on them.
+/// Lists connected YubiKeys without changing anything on them. Waits
+/// for another program that is talking to them: a look in the middle of
+/// its work would spoil it.
 pub fn list_devices() -> Result<Devices, Error> {
+    let _turn = Turn::wait()?;
+    look()
+}
+
+/// Lists connected YubiKeys if no other program is talking to them at
+/// this moment, and says `None` if one is: for whoever looks every few
+/// seconds anyway and can keep what it saw the last time.
+pub fn list_devices_unless_busy() -> Result<Option<Devices>, Error> {
+    match Turn::now() {
+        Some(_turn) => look().map(Some),
+        None => Ok(None),
+    }
+}
+
+/// What is connected. The caller has the turn at the YubiKeys.
+fn look() -> Result<Devices, Error> {
     let mut context = match Context::open() {
         Ok(context) => context,
         // PC/SC reports "no readers" as an error rather than an empty list.

@@ -122,7 +122,7 @@ yca repackage --store ~/Documents/home-ca --serial 5d20be --files separate   # t
 
 `yca help` lists the rest: `reissue`, `revoke`, `revoke-ca`, `delete`, `crl`, `sign-csr`, `trust`, `attest`, `protect`, `pin`, `unblock`, `reset` and `demo`, which makes a throwaway CA in memory so you can look at the files without a YubiKey.
 
-With `--json`, every command answers with one JSON document on standard output, for scripts: `yca --json list --store ~/Documents/home-ca`. The window and the command line can work on the same workspace at the same time; what one does shows up in the other within a second.
+With `--json`, every command answers with one JSON document on standard output, for scripts: `yca --json list --store ~/Documents/home-ca`. The window and the command line can work on the same workspace at the same time; what one does shows up in the other within a second. At a YubiKey they take turns: while one of them signs, the other waits until it has finished.
 
 ## AI agents
 

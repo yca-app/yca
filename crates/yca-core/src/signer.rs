@@ -8,10 +8,10 @@ use yubikey::piv::{self, AlgorithmId};
 use yubikey::{Serial, YubiKey};
 use zeroize::Zeroizing;
 
-use crate::Error;
 use crate::device::{
     CA_SLOT, FIRMWARE_TOO_OLD, SlotKey, SlotKeyError, algorithm_name, device_error, read_slot_key,
 };
+use crate::{Error, Turn};
 
 /// A PIV PIN is six to eight characters long.
 const PIN_LENGTH: std::ops::RangeInclusive<usize> = 6..=8;
@@ -21,6 +21,10 @@ const PIN_LENGTH: std::ops::RangeInclusive<usize> = 6..=8;
 /// The private key never leaves the YubiKey. Every signature sends the PIN
 /// to the key again, because the slot asks for it each time, and blocks
 /// until the key is touched if the key was set up to require a touch.
+///
+/// For as long as it is open, no other program of yca's talks to the
+/// YubiKeys: one that looked at this key between the PIN and a signature
+/// would make the key forget the PIN.
 pub struct YubiKeySigner {
     yubikey: Mutex<YubiKey>,
     pin: Zeroizing<Vec<u8>>,
@@ -29,6 +33,8 @@ pub struct YubiKeySigner {
     public_key: Vec<u8>,
     touch_required: bool,
     last_error: Mutex<Option<Error>>,
+    /// Given up last, once the connection above is closed.
+    _turn: Turn,
 }
 
 impl YubiKeySigner {
@@ -37,26 +43,33 @@ impl YubiKeySigner {
     ///
     /// A wrong PIN costs one of the key's attempts, so this never retries;
     /// the error says how many attempts are left. A PIN of impossible
-    /// length is rejected without being sent to the key.
+    /// length is rejected without being sent to the key, and none is sent
+    /// while the key has a single attempt left.
     pub fn open(serial: u32, pin: &str) -> Result<Self, Error> {
         let pin = checked_pin(pin)?;
+        let turn = Turn::wait()?;
         let mut yubikey = open_device(serial)?;
         let key = read_slot_key(&mut yubikey).map_err(|e| match e {
             SlotKeyError::NotReported => Error::Device(FIRMWARE_TOO_OLD.to_owned()),
             SlotKeyError::Other(e) => e,
         })?;
         // Fail on an unsupported key before spending a PIN attempt.
-        let signer = Self::new(yubikey, pin, key)?;
-        signer.with_device(|yubikey| yubikey.verify_pin(&signer.pin).map_err(device_error))?;
+        let signer = Self::new(yubikey, pin, key, turn)?;
+        signer.with_device(|yubikey| {
+            not_the_last_attempt(yubikey)?;
+            yubikey.verify_pin(&signer.pin).map_err(device_error)
+        })?;
         Ok(signer)
     }
 
-    /// Wraps an open YubiKey whose slot 9c holds `key`. Does not check the
-    /// PIN; the caller has, or the first signature will.
+    /// Wraps an open YubiKey whose slot 9c holds `key`, and keeps the turn
+    /// it was opened in. Does not check the PIN; the caller has, or the
+    /// first signature will.
     pub(crate) fn new(
         yubikey: YubiKey,
         pin: Zeroizing<Vec<u8>>,
         key: SlotKey,
+        turn: Turn,
     ) -> Result<Self, Error> {
         let algorithm = key.signature_algorithm().ok_or_else(|| {
             Error::Device(format!(
@@ -72,6 +85,7 @@ impl YubiKeySigner {
             public_key: key.public_key,
             touch_required: key.touch_required,
             last_error: Mutex::new(None),
+            _turn: turn,
         })
     }
 
@@ -178,6 +192,20 @@ pub(crate) fn checked_pin(pin: &str) -> Result<Zeroizing<Vec<u8>>, Error> {
     Ok(Zeroizing::new(pin.as_bytes().to_vec()))
 }
 
+/// Refuses to try a PIN while a wrong one would lock the YubiKey: a slip
+/// of the finger is not worth that. For a PIN a person typed, right
+/// before it is sent and in the same turn at the YubiKeys, so that no
+/// other program of yca's uses up an attempt between the count and the
+/// try.
+pub(crate) fn not_the_last_attempt(yubikey: &mut YubiKey) -> Result<(), Error> {
+    match yubikey.get_pin_retries().map_err(device_error)? {
+        0 => Err(Error::PinLocked),
+        1 => Err(Error::LastAttempt),
+        _ => Ok(()),
+    }
+}
+
+/// Connects to a YubiKey. The caller has the turn at the YubiKeys.
 pub(crate) fn open_device(serial: u32) -> Result<YubiKey, Error> {
     YubiKey::open_by_serial(Serial(serial)).map_err(device_error)
 }

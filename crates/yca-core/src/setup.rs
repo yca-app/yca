@@ -15,8 +15,8 @@ use crate::device::{
     CA_SLOT, FIRMWARE_TOO_OLD, FactoryCredentials, KeyInSlot, SlotKey, device_error, key_in_slot,
     release,
 };
-use crate::signer::{checked_pin, open_device};
-use crate::{Authority, Error, SigningKey, YubiKeySigner};
+use crate::signer::{checked_pin, not_the_last_attempt, open_device};
+use crate::{Authority, Error, SigningKey, Turn, YubiKeySigner};
 
 /// Key type for a new CA key generated inside a YubiKey.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -161,6 +161,10 @@ fn new_ca_key(serial: u32, pin: &str, ca: &NewCa<'_>) -> Result<YubiKeySigner, E
     if ca.name.trim().is_empty() {
         return Err(Error::InvalidRequest("a CA name is required".to_owned()));
     }
+    // Kept until the CA is finished or given up: a look at this YubiKey
+    // by another program in between would leave a key without its
+    // certificate.
+    let turn = Turn::wait()?;
     let mut yubikey = open_device(serial)?;
 
     // Everything that can fail goes before the point of no return. First
@@ -186,6 +190,7 @@ fn new_ca_key(serial: u32, pin: &str, ca: &NewCa<'_>) -> Result<YubiKeySigner, E
     if factory.puk == Some(true) || factory.management_key == Some(true) {
         return Err(Error::FactoryPukOrKey);
     }
+    not_the_last_attempt(&mut yubikey)?;
     yubikey.verify_pin(&pin).map_err(device_error)?;
     authenticate(&mut yubikey)?;
 
@@ -206,7 +211,7 @@ fn new_ca_key(serial: u32, pin: &str, ca: &NewCa<'_>) -> Result<YubiKeySigner, E
         algorithm,
         public_key.subject_public_key.raw_bytes().to_vec(),
     );
-    YubiKeySigner::new(yubikey, pin, key)
+    YubiKeySigner::new(yubikey, pin, key, turn)
 }
 
 /// Stores a CA certificate next to its key and collects the YubiKey's
@@ -231,6 +236,7 @@ fn store_certificate(
 /// A YubiKey only attests keys that were generated inside it, so an
 /// imported key makes this fail.
 pub fn attest_ca_on_yubikey(serial: u32) -> Result<Option<Attestation>, Error> {
+    let _turn = Turn::wait()?;
     let mut yubikey = open_device(serial)?;
     let attestation = read_ca_certificate(&mut yubikey)
         .and_then(|certificate| attest(&mut yubikey, &certificate));
@@ -293,6 +299,7 @@ pub fn protect_yubikey(serial: u32, new_pin: &str, new_puk: &str) -> Result<Prot
     check_new_credential("PIN", new_pin, FACTORY_PIN)?;
     check_new_credential("PUK", new_puk, FACTORY_PUK)?;
 
+    let _turn = Turn::wait()?;
     let mut yubikey = open_device(serial)?;
     let factory = FactoryCredentials::read(&mut yubikey);
     if factory.pin != Some(true) {
@@ -345,13 +352,15 @@ pub fn protect_yubikey(serial: u32, new_pin: &str, new_puk: &str) -> Result<Prot
 ///
 /// `new_puk` is needed where the PUK is the factory one. What was changed
 /// before is left alone, and so is everything else on the key: a CA that
-/// is there keeps working. A wrong `pin` costs one of the key's attempts.
+/// is there keeps working. A wrong `pin` costs one of the key's attempts,
+/// and none is tried with the last.
 pub fn finish_protecting(
     serial: u32,
     pin: &str,
     new_puk: Option<&str>,
 ) -> Result<Protected, Error> {
     let pin = checked_pin(pin)?;
+    let _turn = Turn::wait()?;
     let mut yubikey = open_device(serial)?;
     let factory = FactoryCredentials::read(&mut yubikey);
     if factory.pin == Some(true) {
@@ -377,6 +386,7 @@ pub fn finish_protecting(
         }
         (false, _) => None,
     };
+    not_the_last_attempt(&mut yubikey)?;
     yubikey.verify_pin(&pin).map_err(device_error)?;
 
     if management_key_protected {
@@ -402,9 +412,10 @@ pub fn finish_protecting(
 /// Changes the PIN of a YubiKey. Nothing else on the key is touched: a CA
 /// that is there keeps working, with the new PIN.
 ///
-/// A wrong current PIN costs one of the key's attempts. A key that still
-/// has its factory PIN is not for this: [`protect_yubikey`] gives it a
-/// PUK and a management key of its own along with the PIN.
+/// A wrong current PIN costs one of the key's attempts, and none is tried
+/// with the last. A key that still has its factory PIN is not for this:
+/// [`protect_yubikey`] gives it a PUK and a management key of its own
+/// along with the PIN.
 pub fn change_pin(serial: u32, current_pin: &str, new_pin: &str) -> Result<(), Error> {
     let current = checked_pin(current_pin)?;
     check_new_credential("PIN", new_pin, FACTORY_PIN)?;
@@ -413,10 +424,12 @@ pub fn change_pin(serial: u32, current_pin: &str, new_pin: &str) -> Result<(), E
             "the new PIN is the one the YubiKey has".to_owned(),
         ));
     }
+    let _turn = Turn::wait()?;
     let mut yubikey = open_device(serial)?;
     if FactoryCredentials::read(&mut yubikey).pin == Some(true) {
         return Err(Error::FactoryPin);
     }
+    not_the_last_attempt(&mut yubikey)?;
     yubikey
         .change_pin(&current, new_pin.as_bytes())
         .map_err(device_error)
@@ -434,6 +447,7 @@ pub fn unblock_pin(serial: u32, puk: &str, new_pin: &str) -> Result<(), Error> {
         ));
     }
     check_new_credential("PIN", new_pin, FACTORY_PIN)?;
+    let _turn = Turn::wait()?;
     let mut yubikey = open_device(serial)?;
     yubikey
         .unblock_pin(puk.as_bytes(), new_pin.as_bytes())
@@ -456,6 +470,7 @@ pub fn unblock_pin(serial: u32, puk: &str, new_pin: &str) -> Result<(), Error> {
 /// serial number. The other applications of the YubiKey (FIDO2, OATH,
 /// OpenPGP) are separate from PIV and are not touched.
 pub fn reset_piv(serial: u32) -> Result<(), Error> {
+    let _turn = Turn::wait()?;
     let mut yubikey = open_device(serial)?;
     // A YubiKey resets PIV only once both the PIN and the PUK are locked,
     // so that it cannot happen in passing. Lock them.

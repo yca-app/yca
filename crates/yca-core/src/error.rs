@@ -50,6 +50,19 @@ pub enum Error {
     #[error("the PIN is locked; unblock it with the PUK first")]
     PinLocked,
 
+    /// One more wrong PIN would lock it, so none is tried: a slip of the
+    /// finger is not worth a locked PIN.
+    #[error(
+        "only one PIN attempt is left on this YubiKey; a wrong PIN now would lock it. Enter the \
+         correct PIN once in another tool to reset the counter, then retry."
+    )]
+    LastAttempt,
+
+    /// Another program is talking to the YubiKeys and has not finished in
+    /// the time anything it does there takes.
+    #[error("another program is using the YubiKeys; try again when it has finished")]
+    KeysBusy,
+
     /// The YubiKey rejected the PUK. Each wrong PUK uses up one attempt,
     /// and there is nothing to unblock a PUK with.
     #[error("wrong PUK, {attempts_left} attempts left before it locks permanently")]

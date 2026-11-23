@@ -145,6 +145,7 @@ impl From<Error> for Failure {
                 serial: None,
             },
             Error::PinLocked => Failure::PinLocked { serial: None },
+            Error::LastAttempt => Failure::LastAttempt { serial: None },
             Error::WrongPuk { attempts_left } => Failure::WrongPuk { attempts_left },
             Error::PukLocked => Failure::PukLocked,
             Error::NotTouched => Failure::NotTouched,

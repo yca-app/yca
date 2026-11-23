@@ -60,7 +60,11 @@ fn devices(
     let Ok(_idle) = lock.0.try_lock() else {
         return Err("busy".to_owned());
     };
-    let found = device::list_devices().map_err(|e| e.to_string())?;
+    // Nor behind another program that is talking to them: the command
+    // line in the middle of a signature, say.
+    let Some(found) = device::list_devices_unless_busy().map_err(|e| e.to_string())? else {
+        return Err("busy".to_owned());
+    };
     Ok(view::devices(found, pki_path.as_deref().map(Path::new)))
 }
 

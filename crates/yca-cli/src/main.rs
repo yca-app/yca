@@ -23,7 +23,7 @@ use yca_core::{
     Authority, CaKeyType, CertificateFolder, Error, ExportFile, ExportForm, ExportSource,
     IssuedCertificate, KeyPair, LeafProfile, LeafRequest, NewCa, P12Encryption, P12Options,
     PKCS_ECDSA_P256_SHA256, PKCS_ECDSA_P384_SHA384, PKCS_RSA_SHA256, Record, Repack, RsaKeySize,
-    SigningRequest, Status, Store, YubiKeySigner,
+    SigningRequest, Status, Store, Turn, YubiKeySigner,
 };
 use zeroize::Zeroizing;
 
@@ -798,7 +798,7 @@ fn run(command: Command) -> Result<()> {
 }
 
 fn devices() -> Result<()> {
-    let found = device::list_devices()?;
+    let found = yubikeys()?;
     if JSON.load(Ordering::Relaxed) {
         answer(serde_json::to_value(view::devices(found, None))?);
         return Ok(());
@@ -966,7 +966,7 @@ fn open_ca(
     serial: Option<u32>,
     store: Option<&Store>,
 ) -> Result<Authority<YubiKeySigner>> {
-    let found = device::list_devices()?;
+    let found = yubikeys()?;
     let device = found.select_ca(role, serial)?;
     let ca = device
         .ca
@@ -1046,7 +1046,7 @@ fn adopt(
     issuing_device: Option<u32>,
     replace_issuing: bool,
 ) -> Result<()> {
-    let found = device::list_devices()?;
+    let found = yubikeys()?;
 
     let mut store = if Store::exists(dir) {
         say!("Workspace folder {} already exists.", dir.display());
@@ -1632,7 +1632,7 @@ fn profile_name(profile: LeafProfile) -> &'static str {
 }
 
 fn init_root(name: &str, serial: u32, key: CaKey, replace: bool, out: &Path) -> Result<()> {
-    let found = device::list_devices()?;
+    let found = yubikeys()?;
     let device = target_for_new_ca(&found, serial, "a root CA", replace)?;
     let pin = pin_for_new_ca(device)?;
     say!("Generating the key inside the YubiKey...");
@@ -1677,7 +1677,7 @@ fn init_issuing(
 ) -> Result<()> {
     let revoke_old = workspace.as_ref().is_some_and(|w| w.revoke_old);
     let store = workspace.map(|w| w.dir);
-    let found = device::list_devices()?;
+    let found = yubikeys()?;
     let root_device = found
         .select_ca(CaRole::Root, root_serial)
         .context("the root CA signs the issuing CA, so its YubiKey has to be connected too")?;
@@ -1797,7 +1797,7 @@ fn init_issuing_under_throwaway_root(
     replace: bool,
     out: &Path,
 ) -> Result<()> {
-    let found = device::list_devices()?;
+    let found = yubikeys()?;
     let device = target_for_new_ca(&found, serial, "an issuing CA", replace)?;
     say!("It will be signed by a throwaway root that exists only in memory. For testing.");
     let pin = pin_for_new_ca(device)?;
@@ -1959,7 +1959,7 @@ fn write_new_ca(
 }
 
 fn protect(serial: u32) -> Result<()> {
-    let found = device::list_devices()?;
+    let found = yubikeys()?;
     let device = found
         .usable
         .iter()
@@ -2016,7 +2016,7 @@ fn connected(found: &device::Devices, serial: u32) -> Result<&Device> {
 }
 
 fn change_pin(serial: u32) -> Result<()> {
-    let found = device::list_devices()?;
+    let found = yubikeys()?;
     let device = connected(&found, serial)?;
     if device.factory.pin == Some(true) {
         bail!(
@@ -2032,7 +2032,7 @@ fn change_pin(serial: u32) -> Result<()> {
 }
 
 fn unblock(serial: u32) -> Result<()> {
-    let found = device::list_devices()?;
+    let found = yubikeys()?;
     connected(&found, serial)?;
     say!("Setting a new PIN on YubiKey {serial} with its PUK.");
     say!("A wrong PUK costs one of its attempts, and nothing unblocks a PUK.");
@@ -2046,7 +2046,7 @@ fn unblock(serial: u32) -> Result<()> {
 }
 
 fn reset(serial: u32) -> Result<()> {
-    let found = device::list_devices()?;
+    let found = yubikeys()?;
     let device = connected(&found, serial)?;
     let (major, minor, patch) = device.firmware;
     say!("YubiKey {serial} (firmware {major}.{minor}.{patch}) holds in its PIV application:");
@@ -2144,15 +2144,23 @@ fn attest(serial: u32) -> Result<()> {
     Ok(())
 }
 
+/// The connected YubiKeys. If another program is talking to them, this
+/// one waits for it, and says so first: a wait with no word looks like a
+/// program that hangs.
+fn yubikeys() -> Result<device::Devices> {
+    if Turn::is_another_programs() {
+        eprintln!("Another program is using the YubiKeys. Waiting for it to finish.");
+    }
+    Ok(device::list_devices()?)
+}
+
 /// Asks for the PIN on the terminal. A wrong PIN uses up an attempt, so
-/// this refuses to gamble with the last one.
+/// this refuses to gamble with the last one. It says so before anything
+/// is typed; the PIN is not sent with one attempt left either way.
 fn prompt_pin(device: &Device) -> Result<Zeroizing<String>> {
     match device.pin_attempts_left {
         0 => bail!("the PIN of this YubiKey is locked; unblock it with the PUK first"),
-        1 => bail!(
-            "only one PIN attempt is left on this YubiKey; a wrong PIN now would lock it. \
-             Enter the correct PIN once in another tool to reset the counter, then retry."
-        ),
+        1 => bail!(Error::LastAttempt),
         _ => {}
     }
     let pin = rpassword::prompt_password(format!(

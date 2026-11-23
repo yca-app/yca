@@ -18,6 +18,7 @@ mod revocation;
 mod setup;
 mod signer;
 mod store;
+mod turn;
 pub mod view;
 
 pub use authority::{Authority, IssuedCertificate};
@@ -42,3 +43,4 @@ pub use store::{
     CaEntry, CertificateFolder, CrlStatus, Deleted, Fingerprints, Record, Renewal, Repack,
     Repacked, RetiredCa, Status, Store,
 };
+pub use turn::Turn;

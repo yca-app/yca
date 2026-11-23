@@ -34,9 +34,10 @@ use crate::{ExportForm, LeafProfile};
 /// find what this one left, nor be found by the `yca` command of before.
 pub const APP_IDENTIFIER: &str = "io.github.yca-app.yca";
 
-/// Where the app listens for programs that ask on a person's behalf.
-/// `None` where that folder cannot be told.
-pub fn socket_path() -> Option<PathBuf> {
+/// The app's folder among its user's application data, which only that
+/// user can reach. The app and the `yca` command find each other there.
+/// `None` where it cannot be told.
+pub fn app_folder() -> Option<PathBuf> {
     let home = PathBuf::from(std::env::var_os("HOME")?);
     let data = if cfg!(target_os = "macos") {
         home.join("Library/Application Support")
@@ -46,7 +47,13 @@ pub fn socket_path() -> Option<PathBuf> {
             None => home.join(".local/share"),
         }
     };
-    Some(data.join(APP_IDENTIFIER).join("agent.sock"))
+    Some(data.join(APP_IDENTIFIER))
+}
+
+/// Where the app listens for programs that ask on a person's behalf.
+/// `None` where that folder cannot be told.
+pub fn socket_path() -> Option<PathBuf> {
+    Some(app_folder()?.join("agent.sock"))
 }
 
 /// What a program asks the app to put before the person.

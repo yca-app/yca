@@ -2276,3 +2276,194 @@ fn files_are_not_written_again_with_a_key_that_is_not_the_certificates() {
         foreign
     );
 }
+
+#[test]
+fn a_register_whose_serial_numbers_lead_elsewhere_is_refused() {
+    let mut pki = pki();
+    let serial = issue_into(&mut pki, "nas.home.example", None);
+    let index = pki.store.dir().join("index.toml");
+    let text = fs::read_to_string(&index).unwrap();
+    assert!(text.contains(&format!("serial = \"{serial}\"")));
+    // A serial number names the register's own copy of the certificate,
+    // which is read, and removed when the certificate is deleted.
+    let outside = pki.store.dir().parent().unwrap().join("outside.pem");
+    fs::write(&outside, "not yca's").unwrap();
+    for elsewhere in ["../../outside", "/etc/passwd", "", "AB12", "12 34", "zz"] {
+        fs::write(
+            &index,
+            text.replace(
+                &format!("serial = \"{serial}\""),
+                &format!("serial = \"{elsewhere}\""),
+            ),
+        )
+        .unwrap();
+        assert!(
+            matches!(Store::open(pki.store.dir()), Err(Error::Store(_))),
+            "{elsewhere}"
+        );
+    }
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "not yca's");
+}
+
+#[test]
+fn a_register_that_was_changed_after_it_was_opened_is_refused_as_well() {
+    let mut pki = pki();
+    let serial = issue_into(&mut pki, "nas.home.example", None);
+    let outside = pki.store.dir().parent().unwrap().join("outside.pem");
+    fs::write(&outside, "not yca's").unwrap();
+
+    // Another program writes to the register while this one has the
+    // workspace open, as a window has for hours.
+    let index = pki.store.dir().join("index.toml");
+    let text = fs::read_to_string(&index).unwrap();
+    fs::write(
+        &index,
+        text.replace(
+            &format!("serial = \"{serial}\""),
+            "serial = \"../../outside\"",
+        ),
+    )
+    .unwrap();
+    assert!(matches!(
+        pki.store.delete("../../outside", now()),
+        Err(Error::Store(_))
+    ));
+    assert!(matches!(
+        pki.store.revoke(&serial, now()),
+        Err(Error::Store(_))
+    ));
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "not yca's");
+
+    fs::write(
+        &index,
+        text.replace(
+            "folder = \"nas.home.example\"",
+            "folder = \"../../elsewhere\"",
+        ),
+    )
+    .unwrap();
+    assert!(matches!(
+        pki.store.delete(&serial, now()),
+        Err(Error::Store(_))
+    ));
+    assert!(matches!(
+        pki.store.set_group(&serial, Some("Office")),
+        Err(Error::Store(_))
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn links_in_the_workspace_do_not_lead_what_yca_writes_or_deletes_out_of_it() {
+    use std::os::unix::fs::symlink;
+
+    let mut pki = pki();
+    let elsewhere = pki.store.dir().parent().unwrap().join("elsewhere");
+    fs::create_dir_all(elsewhere.join("mine")).unwrap();
+    fs::write(elsewhere.join("mine/private-key.key"), "somebody's own key").unwrap();
+    let certificates = pki.store.dir().join("certificates");
+
+    // The folder of a certificate exchanged for a link to somebody's folder
+    // that happens to hold a file of the same name.
+    let (linked, _) = issue_with_files(
+        &mut pki,
+        "nas.home.example",
+        CaRole::Issuing,
+        ExportForm::Fullchain,
+        true,
+    );
+    fs::remove_dir_all(certificates.join("nas.home.example")).unwrap();
+    symlink(
+        elsewhere.join("mine"),
+        certificates.join("nas.home.example"),
+    )
+    .unwrap();
+    assert!(matches!(
+        pki.store.delete(&linked, now()),
+        Err(Error::Store(_))
+    ));
+    assert!(matches!(
+        pki.store.repackage(&linked, repack(ExportForm::Separate)),
+        Err(Error::Store(_))
+    ));
+    assert!(matches!(
+        pki.store.set_group(&linked, Some("Office")),
+        Err(Error::Store(_))
+    ));
+    assert_eq!(
+        fs::read_to_string(elsewhere.join("mine/private-key.key")).unwrap(),
+        "somebody's own key"
+    );
+    assert!(pki.store.find(&linked).is_ok());
+    fs::remove_file(certificates.join("nas.home.example")).unwrap();
+
+    // The folder of a group exchanged for a link: nothing new goes there.
+    issue_into(&mut pki, "printer.home.example", Some("Office"));
+    fs::remove_dir_all(certificates.join("Office")).unwrap();
+    symlink(&elsewhere, certificates.join("Office")).unwrap();
+    assert!(matches!(
+        pki.store
+            .new_certificate_folder("switch.home.example", Some("Office")),
+        Err(Error::Store(_))
+    ));
+    assert!(!elsewhere.join("switch.home.example").exists());
+    fs::remove_file(certificates.join("Office")).unwrap();
+
+    // And `certificates` itself.
+    fs::rename(&certificates, pki.store.dir().join("put aside")).unwrap();
+    symlink(&elsewhere, &certificates).unwrap();
+    assert!(matches!(
+        pki.store
+            .new_certificate_folder("switch.home.example", None),
+        Err(Error::Store(_))
+    ));
+    assert!(!elsewhere.join("switch.home.example").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_where_a_file_is_written_through_is_not_followed() {
+    use std::os::unix::fs::symlink;
+
+    let mut pki = pki();
+    let theirs = pki.store.dir().parent().unwrap().join("theirs.txt");
+    fs::write(&theirs, "somebody's own file").unwrap();
+    let (serial, device_key) = issue_with_files(
+        &mut pki,
+        "nas.home.example",
+        CaRole::Issuing,
+        ExportForm::Fullchain,
+        true,
+    );
+    let folder = pki.store.dir().join("certificates/nas.home.example");
+
+    // Where a private key is written through on its way into its file.
+    symlink(&theirs, folder.join(".private-key.key.tmp")).unwrap();
+    pki.store
+        .repackage(&serial, repack(ExportForm::Separate))
+        .unwrap();
+    assert_eq!(fs::read_to_string(&theirs).unwrap(), "somebody's own file");
+    assert_eq!(
+        fs::read_to_string(folder.join("private-key.key")).unwrap(),
+        device_key.serialize_pem()
+    );
+    assert!(
+        !fs::symlink_metadata(folder.join("private-key.key"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+
+    // And where the register is written through.
+    symlink(&theirs, pki.store.dir().join("index.toml.tmp")).unwrap();
+    pki.store.revoke(&serial, now()).unwrap();
+    assert_eq!(fs::read_to_string(&theirs).unwrap(), "somebody's own file");
+    assert!(
+        Store::open(pki.store.dir())
+            .unwrap()
+            .find(&serial)
+            .unwrap()
+            .revoked_at
+            .is_some()
+    );
+}

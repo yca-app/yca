@@ -299,8 +299,12 @@ impl CertificateFolder {
     pub fn write(&self, file: &ExportFile) -> Result<(), Error> {
         let path = self.path.join(&file.name);
         let temporary = self.path.join(temporary(&file.name));
+        // Made anew, never opened: whatever lies under that name goes
+        // first. A link somebody put there would otherwise be followed,
+        // and the file it points to written over with a private key.
+        let _ = fs::remove_file(&temporary);
         let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
+        options.write(true).create_new(true);
         #[cfg(unix)]
         if file.holds_private_key {
             use std::os::unix::fs::OpenOptionsExt;
@@ -535,18 +539,7 @@ impl Store {
         let meta: Meta = read_toml(&dir.join(META_FILE))?;
         check_format(&dir, meta.version)?;
         let index: Index = read_toml(&dir.join(INDEX_FILE))?;
-        // Folders are moved and emptied by what the register says, so a
-        // register that points out of the workspace is not gone by.
-        let astray = index
-            .certificates
-            .iter()
-            .find(|record| !plain_folder(&record.folder));
-        if let Some(record) = astray {
-            return Err(Error::Store(format!(
-                "the register names a folder outside the workspace for certificate {}",
-                record.serial
-            )));
-        }
+        check_register(&meta, &index)?;
         let store = Self { dir, meta, index };
         store.check_cas()?;
         Ok(store)
@@ -896,6 +889,28 @@ impl Store {
         self.dir.join(CERTIFICATES_DIR).join(&record.folder)
     }
 
+    /// Makes sure that a folder which is about to be written into, moved
+    /// or emptied really lies in the workspace.
+    ///
+    /// Its name says so, but any folder on the way to it may be a link
+    /// that somebody put there, and a link leads wherever it likes: a
+    /// private key would be written outside the workspace, or files
+    /// deleted that were never yca's. Followed to where it really is, the
+    /// folder has to be below the workspace folder.
+    fn within(&self, folder: &Path) -> Result<(), Error> {
+        let workspace = fs::canonicalize(&self.dir).map_err(|e| io_error(&self.dir, e))?;
+        let real = fs::canonicalize(folder).map_err(|e| io_error(folder, e))?;
+        if real.starts_with(&workspace) {
+            Ok(())
+        } else {
+            Err(Error::Store(format!(
+                "{} leads out of the workspace folder, and yca writes and deletes only inside \
+                 it. Something other than yca put a link there",
+                folder.display()
+            )))
+        }
+    }
+
     /// Whether the register names this folder as a certificate's, leaving
     /// out the entry at `except`. A folder belongs to the certificate whose
     /// entry names it even while it is not on the disk: its owner may have
@@ -1056,6 +1071,7 @@ impl Store {
 
         // Made again if somebody took it away.
         fs::create_dir_all(&path).map_err(|e| io_error(&path, e))?;
+        self.within(&path)?;
         let folder = CertificateFolder {
             name: record.folder.clone(),
             path: path.clone(),
@@ -1244,6 +1260,7 @@ impl Store {
             base.push(within);
         }
         fs::create_dir_all(&base).map_err(|e| io_error(&base, e))?;
+        self.within(&base)?;
         let safe = folder_name(first_name);
         for attempt in 1u32.. {
             let leaf = match attempt {
@@ -1308,6 +1325,8 @@ impl Store {
                 parent.push(within);
             }
             fs::create_dir_all(&parent).map_err(|e| io_error(&parent, e))?;
+            self.within(from)?;
+            self.within(&parent)?;
             let wanted = old.rsplit('/').next().unwrap_or(old);
             let leaf = (1u32..)
                 .map(|attempt| match attempt {
@@ -1485,11 +1504,17 @@ impl Store {
                 Err(fs::TryLockError::Error(e)) => return Err(io_error(&path, e)),
             }
         }
-        self.meta = read_toml(&self.dir.join(META_FILE))?;
+        let meta: Meta = read_toml(&self.dir.join(META_FILE))?;
         // Another program may have moved the workspace on since it was
         // opened here.
-        check_format(&self.dir, self.meta.version)?;
-        self.index = read_toml(&self.dir.join(INDEX_FILE))?;
+        check_format(&self.dir, meta.version)?;
+        let index: Index = read_toml(&self.dir.join(INDEX_FILE))?;
+        // Or written something into the register that leads elsewhere:
+        // what was true when the workspace was opened is made sure of
+        // again before anything is done by it.
+        check_register(&meta, &index)?;
+        self.meta = meta;
+        self.index = index;
         Ok(Held { _lock: lock })
     }
 
@@ -1598,6 +1623,13 @@ impl Store {
         let folder = self.folder_of(&self.index.certificates[position]);
         let shared =
             self.folder_is_taken(&self.index.certificates[position].folder, Some(position));
+        if !shared && folder.exists() {
+            self.within(&folder)?;
+        }
+        let copies = self.dir.join(REGISTER_DIR);
+        if copies.exists() {
+            self.within(&copies)?;
+        }
         if !shared {
             for name in KEY_FILES {
                 remove_file(&folder.join(name))?;
@@ -1819,9 +1851,28 @@ impl Store {
 
     fn write_bytes(&self, name: &str, contents: &[u8]) -> Result<(), Error> {
         let path = self.dir.join(name);
+        if let Some(folder) = path.parent() {
+            self.within(folder)?;
+        }
         let temporary = self.dir.join(format!("{name}.tmp"));
-        fs::write(&temporary, contents).map_err(|e| io_error(&temporary, e))?;
-        fs::rename(&temporary, &path).map_err(|e| io_error(&path, e))
+        // Made anew, never opened, so that a link under that name is not
+        // followed; and on the disk before it takes the place of what was
+        // there.
+        let _ = fs::remove_file(&temporary);
+        let written = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .and_then(|mut target| {
+                std::io::Write::write_all(&mut target, contents)?;
+                target.sync_all()
+            })
+            .map_err(|e| io_error(&temporary, e))
+            .and_then(|()| fs::rename(&temporary, &path).map_err(|e| io_error(&path, e)));
+        if written.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        written
     }
 }
 
@@ -1847,6 +1898,58 @@ fn remove_file(path: &Path) -> Result<(), Error> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(io_error(path, error)),
     }
+}
+
+/// Refuses a register that names anything outside the workspace.
+///
+/// Folders are moved and emptied, and files are read and removed, by what
+/// the register says, and the register is a plain file that other programs
+/// can write to. A folder has to be one that a certificate's folder can
+/// be. A serial number, which names the register's own copy of a
+/// certificate, has to be one, and so has the key identifier a replaced
+/// CA's certificate is filed under. None of them is repeated in the error:
+/// whoever wrote it there chose its words.
+fn check_register(meta: &Meta, index: &Index) -> Result<(), Error> {
+    let changed = |what: &str| {
+        Error::Store(format!(
+            "the register {what}. Something other than yca changed this folder; restore it \
+             from a backup"
+        ))
+    };
+    let hexadecimal = |text: &str, longest: usize| {
+        (1..=longest).contains(&text.len())
+            && text
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    };
+    // A serial number is twenty bytes at most, and one more where its
+    // first bit would make it negative.
+    let serials = index
+        .certificates
+        .iter()
+        .map(|record| &record.serial)
+        .chain(index.revocations.iter().map(|kept| &kept.serial));
+    for serial in serials {
+        if !hexadecimal(serial, 42) {
+            return Err(changed("holds a serial number that is not one"));
+        }
+    }
+    if index
+        .certificates
+        .iter()
+        .any(|record| !plain_folder(&record.folder))
+    {
+        return Err(changed("names a folder outside the workspace"));
+    }
+    if meta
+        .retired
+        .iter()
+        .filter_map(|ca| ca.key_id.as_deref())
+        .any(|key_id| !hexadecimal(key_id, 128))
+    {
+        return Err(changed("holds a key identifier that is not one"));
+    }
+    Ok(())
 }
 
 /// Whether a folder named in the register is where a certificate's folder

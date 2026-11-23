@@ -2525,3 +2525,193 @@ fn the_same_issuing_ca_found_on_another_yubikey_goes_on_counting_its_lists() {
     assert_eq!(pki.store.ca(CaRole::Issuing).unwrap().yubikey, 3003);
     assert_eq!(pki.store.next_crl_number(CaRole::Issuing).unwrap(), 2);
 }
+
+#[test]
+fn two_programs_starting_a_workspace_in_one_folder_leave_one_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("pki");
+    let at = now();
+    // Each has a root CA of its own and finds the folder free at the
+    // same moment: two agents, say, or a script run twice.
+    let roots: Vec<Authority<KeyPair>> = (0..8)
+        .map(|n| Authority::create_root(&format!("Root CA {n}"), key(), at).unwrap())
+        .collect();
+    let start = std::sync::Barrier::new(roots.len());
+    let made: Vec<Option<Vec<u8>>> = std::thread::scope(|scope| {
+        let programs: Vec<_> = roots
+            .iter()
+            .map(|root| {
+                scope.spawn(|| {
+                    start.wait();
+                    Store::create(&folder, root.certificate_der(), ROOT_KEY)
+                        .ok()
+                        .map(|_| root.certificate_der().to_vec())
+                })
+            })
+            .collect();
+        programs
+            .into_iter()
+            .map(|program| program.join().unwrap())
+            .collect()
+    });
+
+    let winners: Vec<&Vec<u8>> = made.iter().flatten().collect();
+    assert_eq!(winners.len(), 1, "one program makes the workspace");
+    // And it is whole: the root CA on file is the one the list of CAs
+    // names, not another program's written over it.
+    let store = Store::open(&folder).unwrap();
+    assert_eq!(&store.ca_certificate_der(CaRole::Root).unwrap(), winners[0]);
+    let subject = parse(winners[0]).subject().to_string();
+    assert_eq!(store.ca(CaRole::Root).unwrap().subject, subject);
+}
+
+#[test]
+fn a_register_that_lost_its_list_of_cas_is_not_written_over() {
+    let mut pki = pki();
+    issue_into(&mut pki, "nas.home.example", None);
+    let dir = pki.store.dir().to_owned();
+    let register = fs::read(dir.join("index.toml")).unwrap();
+    // Deleted by hand, or not brought along by whatever synchronises the
+    // folder.
+    fs::remove_file(dir.join("ca.toml")).unwrap();
+    assert!(!Store::exists(&dir));
+
+    // Whoever is about to make a CA for a new workspace learns it before.
+    assert!(matches!(Store::can_start_in(&dir), Err(Error::Store(_))));
+    assert!(Store::can_start_in(dir.with_file_name("not there yet")).is_ok());
+    let other = Authority::create_root("Another Root CA", key(), now()).unwrap();
+    let refused = Store::create(&dir, other.certificate_der(), ROOT_KEY);
+    assert!(matches!(refused, Err(Error::Store(_))));
+    // What is left is left as it was: the register, and the root CA that
+    // goes with it.
+    assert_eq!(fs::read(dir.join("index.toml")).unwrap(), register);
+    assert_eq!(
+        fs::read_to_string(dir.join("root.pem")).unwrap(),
+        pki.root.certificate_pem()
+    );
+    assert!(!Store::exists(&dir));
+}
+
+#[test]
+fn a_list_of_a_ca_that_was_replaced_meanwhile_is_not_kept_as_the_new_ones() {
+    let mut pki = pki();
+    let at = now();
+    // One program has the old issuing CA sign its first list. The PIN is
+    // being typed, or the YubiKey waits for its touch.
+    let mut command = Store::open(pki.store.dir()).unwrap();
+    let number = command.next_crl_number(CaRole::Issuing).unwrap();
+    let list = pki.issuing.revocation_list(&[], number, at).unwrap();
+
+    // Meanwhile another one replaces that CA.
+    let second = pki
+        .root
+        .create_issuing("Second Issuing CA", key(), at)
+        .unwrap();
+    pki.store
+        .set_issuing(second.certificate_der(), 2002)
+        .unwrap();
+
+    // The new CA has signed no list either, so the number fits. The list
+    // is still not the new CA's.
+    assert!(matches!(
+        command.save_crl(CaRole::Issuing, &list),
+        Err(Error::Store(_))
+    ));
+    let dir = pki.store.dir();
+    assert!(!dir.join("crl/issuing.crl").exists());
+    assert!(!dir.join("crl/issuing.crl.pem").exists());
+    let after = Store::open(dir).unwrap();
+    assert_eq!(after.crl_status(CaRole::Issuing, at).unwrap().number, None);
+    // The new CA's own first list is number one.
+    assert_eq!(after.next_crl_number(CaRole::Issuing).unwrap(), 1);
+
+    // Nor is a list of the root kept as the issuing CA's.
+    let of_root = pki.root.revocation_list(&[], 1, at).unwrap();
+    assert!(matches!(
+        pki.store.save_crl(CaRole::Issuing, &of_root),
+        Err(Error::Store(_))
+    ));
+}
+
+/// Something in the way of a file the store is about to write: a folder
+/// under the name the file is written through. Stands for a write that
+/// fails, as on a full disk.
+fn in_the_way(of: &std::path::Path) -> std::path::PathBuf {
+    let obstacle = of.with_file_name(format!("{}.tmp", of.file_name().unwrap().to_string_lossy()));
+    fs::create_dir_all(obstacle.join("full")).unwrap();
+    obstacle
+}
+
+#[test]
+fn a_list_number_is_not_used_twice_when_a_list_could_not_be_written() {
+    let mut pki = pki();
+    let at = now();
+    let dir = pki.store.dir().to_owned();
+    fs::create_dir_all(dir.join("crl")).unwrap();
+    let obstacle = in_the_way(&dir.join("crl/issuing.crl"));
+
+    let first = pki.issuing.revocation_list(&[], 1, at).unwrap();
+    assert!(pki.store.save_crl(CaRole::Issuing, &first).is_err());
+    // Number one is spent, although no list carries it: the list was
+    // signed, and may have been taken from the YubiKey's answer already.
+    let reopened = Store::open(&dir).unwrap();
+    assert_eq!(reopened.next_crl_number(CaRole::Issuing).unwrap(), 2);
+    assert!(!dir.join("crl/issuing.crl.pem").exists());
+
+    fs::remove_dir_all(obstacle).unwrap();
+    // The same list again is out of sequence now; the next one is kept.
+    assert!(pki.store.save_crl(CaRole::Issuing, &first).is_err());
+    let second = pki.issuing.revocation_list(&[], 2, at).unwrap();
+    pki.store.save_crl(CaRole::Issuing, &second).unwrap();
+    assert_eq!(
+        pki.store.crl_status(CaRole::Issuing, at).unwrap().number,
+        Some(2)
+    );
+}
+
+#[test]
+fn a_replacement_that_was_stopped_halfway_is_finished_by_doing_it_again() {
+    let mut pki = pki();
+    let at = now();
+    let of_the_first = issue_into(&mut pki, "nas.home.example", None);
+    let dir = pki.store.dir().to_owned();
+    let second = pki
+        .root
+        .create_issuing("Second Issuing CA", key(), at)
+        .unwrap();
+
+    // The new certificate cannot be written: the replacement stops after
+    // the list of CAs and before the certificate.
+    let obstacle = in_the_way(&dir.join("issuing.pem"));
+    assert!(
+        pki.store
+            .set_issuing(second.certificate_der(), 2002)
+            .is_err()
+    );
+    // The workspace still opens, with the old certificate on file and the
+    // old CA among those that were replaced.
+    let stopped = Store::open(&dir).unwrap();
+    assert_eq!(
+        stopped.ca_certificate_der(CaRole::Issuing).unwrap(),
+        pki.issuing.certificate_der()
+    );
+    assert_eq!(stopped.retired().len(), 1);
+
+    // Done again, as the app tells the person to, it finishes: the new CA
+    // is in place, and the old one is retired once and can be revoked.
+    fs::remove_dir_all(obstacle).unwrap();
+    let mut again = Store::open(&dir).unwrap();
+    again.set_issuing(second.certificate_der(), 2002).unwrap();
+    assert_eq!(
+        again.ca_certificate_der(CaRole::Issuing).unwrap(),
+        second.certificate_der()
+    );
+    let [retired] = again.retired() else {
+        panic!("expected one replaced issuing CA");
+    };
+    let first = retired.serial.clone();
+    let record = again.find(&of_the_first).unwrap().clone();
+    assert!(again.retired_issuer(&record).is_some());
+    again.revoke_retired(&first, at).unwrap();
+    assert!(Store::open(&dir).unwrap().retired()[0].revoked_at.is_some());
+}

@@ -476,19 +476,14 @@ pub struct Store {
 
 impl Store {
     /// Starts a new PKI folder around a root CA certificate. The folder
-    /// must not already hold a PKI.
+    /// must not already hold a PKI, nor what is left of one.
     pub fn create(
         dir: impl Into<PathBuf>,
         root_certificate_der: &[u8],
         yubikey: u32,
     ) -> Result<Self, Error> {
         let dir = dir.into();
-        if dir.join(META_FILE).exists() {
-            return Err(Error::Store(format!(
-                "{} already is a workspace folder",
-                dir.display()
-            )));
-        }
+        Self::can_start_in(&dir)?;
 
         let root = parse(root_certificate_der)?;
         require_ca(&root)?;
@@ -499,6 +494,14 @@ impl Store {
                 "the root CA certificate is not self-signed".to_owned(),
             ));
         }
+
+        // The folder is this program's from here to the end. Two that
+        // start a workspace in it at the same moment would otherwise both
+        // find it free, and the second would write its root CA and an
+        // empty register over what the first one made.
+        fs::create_dir_all(&dir).map_err(|e| io_error(&dir, e))?;
+        let _held = take(&dir)?;
+        Self::can_start_in(&dir)?;
 
         fs::create_dir_all(dir.join(CERTIFICATES_DIR)).map_err(|e| io_error(&dir, e))?;
         let store = Self {
@@ -525,6 +528,31 @@ impl Store {
     /// Whether `dir` already holds a PKI.
     pub fn exists(dir: impl AsRef<Path>) -> bool {
         dir.as_ref().join(META_FILE).exists()
+    }
+
+    /// Whether a workspace can be started in `dir`: not where there is
+    /// one, and not where one left its register behind. For asking before
+    /// a CA is made for the new workspace; [`Self::create`] asks again
+    /// once the folder is its own.
+    pub fn can_start_in(dir: impl AsRef<Path>) -> Result<(), Error> {
+        let dir = dir.as_ref();
+        if Self::exists(dir) {
+            return Err(Error::Store(format!(
+                "{} already is a workspace folder",
+                dir.display()
+            )));
+        }
+        // A register without the list of CAs is what is left of a
+        // workspace, and the only record of what it issued.
+        if dir.join(INDEX_FILE).exists() {
+            return Err(Error::Store(format!(
+                "{} holds the register of a workspace but not its list of CAs. A new workspace \
+                 here would write an empty register over it; restore the folder from a backup, \
+                 or choose another folder",
+                dir.display()
+            )));
+        }
+        Ok(())
     }
 
     /// Opens an existing PKI folder.
@@ -620,9 +648,11 @@ impl Store {
 
         // A replaced issuing CA stays on file: the certificates it issued
         // remain valid and still need it in their chain.
+        let mut replaces = false;
         if self.meta.issuing.is_some() {
             let previous_der = self.ca_certificate_der(CaRole::Issuing)?;
             if previous_der != certificate_der {
+                replaces = true;
                 let previous = parse(&previous_der)?;
                 let dir = self.dir.join(RETIRED_DIR);
                 fs::create_dir_all(&dir).map_err(|e| io_error(&dir, e))?;
@@ -666,12 +696,25 @@ impl Store {
                     .is_ok_and(|current| current == certificate_der)
             })
             .map_or(0, |current| current.crl_number);
-        self.write(&ca_file(CaRole::Issuing), &encode_pem(certificate_der))?;
         self.meta.issuing = Some(CaEntry {
             crl_number: lists_so_far,
             ..ca_entry(&issuing, yubikey)
         });
-        self.write_toml(META_FILE, &self.meta)
+        if replaces {
+            // The list of CAs first, with the one that is replaced among
+            // the retired. Stopped between the two writes, the old
+            // certificate is still the one on file, and doing this again
+            // retires it once more and finishes. The other way round, the
+            // second attempt would find the new certificate in place,
+            // retire nothing, and the old CA could never be revoked.
+            self.write_toml(META_FILE, &self.meta)?;
+            self.write(&ca_file(CaRole::Issuing), &encode_pem(certificate_der))
+        } else {
+            // A first issuing CA is on file before the list names it: a
+            // workspace whose list names one cannot be opened without.
+            self.write(&ca_file(CaRole::Issuing), &encode_pem(certificate_der))?;
+            self.write_toml(META_FILE, &self.meta)
+        }
     }
 
     /// Keeps a YubiKey's proof that the CA key was generated inside it.
@@ -1516,29 +1559,7 @@ impl Store {
     /// is held is decided on what the disk really says, and no other
     /// program writes in between.
     fn hold(&mut self) -> Result<Held, Error> {
-        let path = self.dir.join(LOCK_FILE);
-        let lock = fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)
-            .map_err(|e| io_error(&path, e))?;
-        let started = Instant::now();
-        loop {
-            match lock.try_lock() {
-                Ok(()) => break,
-                Err(fs::TryLockError::WouldBlock) if started.elapsed() < LOCK_PATIENCE => {
-                    std::thread::sleep(Patience::from_millis(25));
-                }
-                Err(fs::TryLockError::WouldBlock) => {
-                    return Err(Error::Store(
-                        "another program is changing this workspace; try again in a moment"
-                            .to_owned(),
-                    ));
-                }
-                Err(fs::TryLockError::Error(e)) => return Err(io_error(&path, e)),
-            }
-        }
+        let held = take(&self.dir)?;
         let meta: Meta = read_toml(&self.dir.join(META_FILE))?;
         // Another program may have moved the workspace on since it was
         // opened here.
@@ -1550,7 +1571,7 @@ impl Store {
         check_register(&meta, &index)?;
         self.meta = meta;
         self.index = index;
-        Ok(Held { _lock: lock })
+        Ok(held)
     }
 
     /// Something that changes whenever the register or the list of CAs is
@@ -1851,25 +1872,43 @@ impl Store {
         list: &RevocationList,
     ) -> Result<(PathBuf, [String; 2]), Error> {
         let _held = self.hold()?;
-        if list.number() != self.next_crl_number(role)? {
+        let number = self.next_crl_number(role)?;
+        // The CA may have been replaced since the list was signed: while
+        // the PIN was typed, say, by another program. A list of the CA
+        // that was is not kept as the list of the CA that is.
+        let ca_der = self.ca_certificate_der(role)?;
+        let ca = parse(&ca_der)?;
+        let signed_by_this_ca = CertificateRevocationList::from_der(list.der())
+            .is_ok_and(|(_, list)| list.verify_signature(ca.public_key()).is_ok());
+        if !signed_by_this_ca {
+            return Err(Error::Store(format!(
+                "the revocation list was not signed by the {role} of this workspace"
+            )));
+        }
+        if list.number() != number {
             return Err(Error::Store(format!(
                 "revocation list number {} is out of sequence",
                 list.number()
             )));
         }
+
+        // The number is spent before the list is on file. Stopped in
+        // between, the next list takes the number after it, and a number
+        // that no list carries does no harm; two lists with one number
+        // would.
+        let entry = match role {
+            CaRole::Root => Some(&mut self.meta.root),
+            CaRole::Issuing => self.meta.issuing.as_mut(),
+        };
+        entry.expect("next_crl_number found this CA").crl_number = number;
+        self.write_toml(META_FILE, &self.meta)?;
+
         let dir = self.dir.join(CRL_DIR);
         fs::create_dir_all(&dir).map_err(|e| io_error(&dir, e))?;
         let pem = format!("{}.crl.pem", role_name(role));
         let der = format!("{}.crl", role_name(role));
         self.write_bytes(&format!("{CRL_DIR}/{der}"), list.der())?;
         self.write(&format!("{CRL_DIR}/{pem}"), &list.pem())?;
-
-        let entry = match role {
-            CaRole::Root => Some(&mut self.meta.root),
-            CaRole::Issuing => self.meta.issuing.as_mut(),
-        };
-        entry.expect("next_crl_number found this CA").crl_number = list.number();
-        self.write_toml(META_FILE, &self.meta)?;
         Ok((dir, [pem, der]))
     }
 
@@ -1908,6 +1947,33 @@ impl Store {
             let _ = fs::remove_file(&temporary);
         }
         written
+    }
+}
+
+/// Takes a workspace folder for one change, waiting for another program
+/// that has it. The folder has to be there.
+fn take(dir: &Path) -> Result<Held, Error> {
+    let path = dir.join(LOCK_FILE);
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| io_error(&path, e))?;
+    let started = Instant::now();
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(Held { _lock: lock }),
+            Err(fs::TryLockError::WouldBlock) if started.elapsed() < LOCK_PATIENCE => {
+                std::thread::sleep(Patience::from_millis(25));
+            }
+            Err(fs::TryLockError::WouldBlock) => {
+                return Err(Error::Store(
+                    "another program is changing this workspace; try again in a moment".to_owned(),
+                ));
+            }
+            Err(fs::TryLockError::Error(e)) => return Err(io_error(&path, e)),
+        }
     }
 }
 

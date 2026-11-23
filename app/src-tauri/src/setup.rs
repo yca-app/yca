@@ -119,6 +119,7 @@ fn root_alone(app: &AppHandle, request: RootAloneSetup) -> Result<PkiView, Failu
             "this folder already is a workspace; choose another place",
         ));
     }
+    Store::can_start_in(&request.workspace_path)?;
     let root = make_root(app, &request.key)?;
 
     let store = Store::create(
@@ -165,6 +166,7 @@ fn issuing(app: &AppHandle, request: IssuingSetup) -> Result<PkiView, Failure> {
             "this folder already is a workspace; choose another place",
         ));
     }
+    Store::can_start_in(&request.workspace_path)?;
     let root_pin = Zeroizing::new(request.root_pin);
     let root = Authority::open_on_yubikey(request.root_serial, &root_pin)?;
     if !root.is_root() {

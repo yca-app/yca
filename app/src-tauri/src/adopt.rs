@@ -17,6 +17,7 @@ pub fn adopt_pki(lock: tauri::State<'_, KeyLock>, path: String) -> Result<PkiVie
     if Store::exists(&path) {
         return Err("this folder already is a workspace; open it instead".to_owned());
     }
+    Store::can_start_in(&path).map_err(|e| e.to_string())?;
     let found = device::list_devices().map_err(|e| e.to_string())?;
     let device = found
         .select_ca(CaRole::Root, None)

@@ -126,7 +126,9 @@ pub enum Failure {
     WrongPassword,
     /// A new CA key was generated, replacing what the slot held, but the
     /// CA was not finished. Trying again has to replace that key.
-    Interrupted { message: String },
+    /// `not_touched` says that what it lacked was the touch for its
+    /// signature, so the window can name the YubiKey that waited for it.
+    Interrupted { message: String, not_touched: bool },
     /// Anything else, in words.
     Other { message: String },
 }
@@ -145,6 +147,7 @@ impl From<Error> for Failure {
             Error::WrongP12Password => Failure::WrongPassword,
             Error::SetupInterrupted(cause) => Failure::Interrupted {
                 message: cause.to_string(),
+                not_touched: matches!(*cause, Error::NotTouched),
             },
             other => Failure::Other {
                 message: other.to_string(),
@@ -274,6 +277,22 @@ pub(crate) fn open_ca(
     role: CaRole,
     pin: Zeroizing<String>,
 ) -> Result<Authority<YubiKeySigner>, Failure> {
+    let (authority, serial) = open_ca_quietly(store, role, pin)?;
+    if authority.key().touch_required() {
+        // The window shows "touch your YubiKey" on this.
+        let _ = app.emit(TOUCH_EVENT, serial);
+    }
+    Ok(authority)
+}
+
+/// The same without a word to the window, for a CA that signs only after
+/// something else is done first: the touch is then asked for when its turn
+/// comes. Returns the serial number of its YubiKey as well.
+pub(crate) fn open_ca_quietly(
+    store: &Store,
+    role: CaRole,
+    pin: Zeroizing<String>,
+) -> Result<(Authority<YubiKeySigner>, u32), Failure> {
     let expected = store
         .ca(role)
         .ok_or_else(|| other(format!("this workspace has no {role} yet")))?
@@ -310,11 +329,7 @@ pub(crate) fn open_ca(
     }
 
     let authority = Authority::open_on_yubikey(device.serial, &pin)?;
-    if authority.key().touch_required() {
-        // The window shows "touch your YubiKey" on this.
-        let _ = app.emit(TOUCH_EVENT, device.serial);
-    }
-    Ok(authority)
+    Ok((authority, device.serial))
 }
 
 /// Has the YubiKey sign something and reports what the key itself said

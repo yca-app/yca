@@ -35,6 +35,10 @@ pub struct Device {
     pub factory: FactoryCredentials,
     /// PIV slots that already hold a certificate.
     pub occupied_slots: Vec<OccupiedSlot>,
+    /// Slot 9c holds a key and no certificate: what a CA that was not
+    /// finished leaves behind, or a key some other tool made there.
+    /// Firmware older than 5.3 cannot tell, and then this is `false`.
+    pub key_without_certificate: bool,
     /// The CA held in slot 9c, if there is one.
     pub ca: Option<StoredCa>,
 }
@@ -46,9 +50,15 @@ impl Device {
         self.firmware >= (5, 7, 0)
     }
 
-    /// Whether the slot yca uses for a CA key (9c) already holds something.
-    /// Setting up a new CA on such a key would overwrite it.
+    /// Whether the slot yca uses for a CA key (9c) already holds something:
+    /// a certificate, or a key that never got one. Setting up a new CA on
+    /// such a key would overwrite it.
     pub fn signature_slot_in_use(&self) -> bool {
+        self.key_without_certificate || self.signature_slot_holds_certificate()
+    }
+
+    /// Whether slot 9c holds a certificate, of a CA or of anything else.
+    pub fn signature_slot_holds_certificate(&self) -> bool {
         self.occupied_slots
             .iter()
             .any(|slot| slot.is_signature_slot)
@@ -295,6 +305,10 @@ fn describe(yubikey: &mut YubiKey, reader: String) -> Result<Device, Error> {
         }
         None => None,
     };
+    // A key that was made for a CA and never got its certificate is in no
+    // list of certificates, and still in the way of the next CA.
+    let key_without_certificate =
+        !keys.iter().any(|key| key.slot() == CA_SLOT) && slot_holds_key(yubikey);
     let pin_attempts_left = yubikey.get_pin_retries().map_err(device_error)?;
     let factory = FactoryCredentials::read(yubikey);
 
@@ -305,8 +319,15 @@ fn describe(yubikey: &mut YubiKey, reader: String) -> Result<Device, Error> {
         pin_attempts_left,
         factory,
         occupied_slots,
+        key_without_certificate,
         ca,
     })
+}
+
+/// Whether slot 9c holds a key, with a certificate or without. Needs no
+/// PIN. Firmware older than 5.3 cannot say, which counts as none.
+pub(crate) fn slot_holds_key(yubikey: &mut YubiKey) -> bool {
+    piv::metadata(yubikey, CA_SLOT).is_ok()
 }
 
 /// Describes the certificate in slot 9c, or `None` if it is not a CA
@@ -524,6 +545,7 @@ mod tests {
             pin_attempts_left: 3,
             factory: FactoryCredentials::default(),
             occupied_slots: Vec::new(),
+            key_without_certificate: false,
             ca: role.map(|role| StoredCa {
                 subject: "CN=Test".to_owned(),
                 role,
@@ -577,6 +599,33 @@ mod tests {
         // Asking for everyday issuing must not end up signing with the root.
         assert!(both.select_ca(CaRole::Issuing, Some(1)).is_err());
         assert!(both.select_ca(CaRole::Issuing, Some(9)).is_err());
+    }
+
+    #[test]
+    fn a_key_that_never_got_its_certificate_is_in_the_way_of_a_new_ca() {
+        // Left by a CA that was given up between its key and its
+        // certificate: nothing to list, and a slot that is not free.
+        let empty = device(1, None);
+        assert!(!empty.signature_slot_in_use());
+
+        let unfinished = Device {
+            key_without_certificate: true,
+            ..device(2, None)
+        };
+        assert!(unfinished.signature_slot_in_use());
+        assert!(!unfinished.signature_slot_holds_certificate());
+
+        let other_certificate = Device {
+            occupied_slots: vec![OccupiedSlot {
+                slot: "9c".to_owned(),
+                is_signature_slot: true,
+                subject: "CN=Somebody".to_owned(),
+                issuer: "CN=Some CA".to_owned(),
+            }],
+            ..device(3, None)
+        };
+        assert!(other_certificate.signature_slot_in_use());
+        assert!(other_certificate.signature_slot_holds_certificate());
     }
 
     #[test]

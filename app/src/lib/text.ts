@@ -83,6 +83,10 @@ export const t = {
   keyHolds: (role: string, name: string) =>
     `Holds the ${role} “${name}”. It will be destroyed for good.`,
   keyHoldsSomething: "Its CA slot holds something. It will be destroyed for good.",
+  // Left behind by a CA that was given up between its key and its
+  // certificate. Nothing can be signed with it, but it is in the way.
+  keyHoldsLoneKey:
+    "Its CA slot holds a key without a certificate, left by a CA that was not finished. It will be destroyed for good.",
   keyFresh: "New. You will choose its PIN.",
   keyEmpty: "This YubiKey has an empty CA slot",
   // Followed by the tag with the key's serial number.
@@ -95,6 +99,9 @@ export const t = {
     "6 to 8 characters each. The PIN is asked for with every signature. The PUK unblocks the PIN after three wrong attempts. Write both down: nobody can recover them.",
   credentialLength: "A PIN and a PUK are 6 to 8 characters long.",
   credentialsDiffer: "The two entries differ",
+  // In place of those fields once a first attempt has set them: they are
+  // on the YubiKey by then, and trying again goes on with them.
+  credentialsSet: "This YubiKey has the PIN and PUK you chose.",
   // Followed by the tag with the key's serial number.
   pinOf: "PIN of YubiKey",
   // Two YubiKeys, two PINs: each field says whose it wants.
@@ -106,10 +113,18 @@ export const t = {
     `This cannot be undone. To confirm, type the serial number ${serial}:`,
   createRoot: "Create root CA",
   createIssuing: "Create issuing CA",
-  creatingRoot: (serial: number) =>
-    `Making the key inside the YubiKey with serial number ${serial}. Touch that YubiKey when it starts to blink.`,
-  creatingIssuing: (issuing: number, root: number) =>
-    `Making the key inside the YubiKey with serial number ${issuing}. The root CA signs it: touch the YubiKey with serial number ${root} when it starts to blink.`,
+  // While the key is being made. No serial number is named here: the only
+  // one this step shows from now on is that of the YubiKey to touch.
+  makingKey: (role: string) => `Making the key of the ${role} inside its YubiKey…`,
+  // A new issuing CA is signed by the root CA, so the touch goes to the
+  // root's YubiKey and not to the one that was just written to. Said as a
+  // heading, with the tag of that key's serial number under it.
+  touchRootTitle: "Touch the YubiKey with the root CA",
+  touchRootHint: "It is blinking, to sign the new issuing CA. The other YubiKey needs no touch.",
+  // Where the root CA was made a moment ago, on a YubiKey that was touched
+  // for it: which of the two it is can be told without reading a number.
+  touchRootAgainHint:
+    "It is the one you touched a moment ago, and it is blinking. The other YubiKey needs no touch.",
   rootDone: (name: string) => `The root CA “${name}” is on its YubiKey.`,
   // Said apart from it: it is what to do now, not what went well, and it
   // says why a PIN is asked for once more. Which PIN depends on whether the
@@ -367,6 +382,9 @@ export const t = {
   // is free to use and the second would lose what it holds.
   holdsNoCa: "This YubiKey has an empty CA slot",
   holdsNotCa: "This YubiKey has something other than a CA in its CA slot",
+  // The key of a CA that was never finished: no certificate, so no CA,
+  // and still not a free slot.
+  holdsLoneKey: "This YubiKey has a key without a certificate in its CA slot",
   unusableKey: "Cannot be used",
 
   // Certificates
@@ -483,10 +501,12 @@ export const t = {
   listExpired: (role: string, date: string) =>
     `The revocation list of the ${role} ran out on ${date}.`,
   listExpiresHint: "Devices that check it need a new one by then.",
-  // A CA that has signed certificates but no list yet: new, or put in
-  // place of a replaced issuing CA.
+  // An issuing CA put in place of one that had signed a list, which has
+  // signed certificates and no list of its own yet. A CA nobody ever signed
+  // a list for is not told this: nothing is revoked, and no device was
+  // given a list to check.
   listMissing: (role: string) => `The ${role} has not signed a revocation list yet.`,
-  listMissingHint: "Devices that check one refuse its certificates without it.",
+  listMissingHint: "Devices that check the replaced CA's list need this CA's too.",
   signList: "Sign revocation list…",
   listTitle: "Sign revocation list",
   listAbout: (role: string) =>
@@ -649,6 +669,12 @@ export const t = {
     wrongPassword: "The password does not open the file. Nothing was signed.",
     interrupted: (cause: string) =>
       `A new key was made on the YubiKey, but the CA was not finished: ${cause}. Try again; the unfinished key will be replaced.`,
+    // The same, where all it lacked was the touch. With two YubiKeys at
+    // work, it says which of them waited for it.
+    untouched:
+      "The YubiKey was not touched in time, so the CA was not finished. Try again; the key that was made for it will be replaced.",
+    untouchedRoot: (serial: number) =>
+      `The YubiKey with the root CA, serial number ${serial}, was not touched in time, so the issuing CA was not finished. Try again; the key that was made for it will be replaced.`,
   },
 };
 

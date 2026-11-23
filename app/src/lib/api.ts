@@ -42,6 +42,9 @@ export interface Device {
   factoryPin: boolean;
   /** Slot 9c holds something; a new CA on this key destroys it. */
   slotInUse: boolean;
+  /** What it holds is a key without a certificate, left by a CA that was
+   *  not finished. */
+  keyWithoutCertificate: boolean;
   /** Other PIV slots that hold a certificate, which a reset destroys too. */
   otherSlots: string[];
   ca: DeviceCa | null;
@@ -60,6 +63,9 @@ export interface Revocation {
   nextUpdate: string | null;
   /** Revoked certificates the list does not name yet. */
   unlisted: number;
+  /** An issuing CA that this one took the place of had signed a list, so
+   *  devices may be checking lists and want one of this CA too. */
+  replacedHadList: boolean;
 }
 
 export interface Ca {
@@ -300,8 +306,9 @@ export type Failure =
   | { kind: "key-missing"; role: CaRole }
   /** The password does not open the `.p12` file the private key is in. */
   | { kind: "wrong-password" }
-  /** A new CA key was made but the CA not finished; retrying replaces it. */
-  | { kind: "interrupted"; message: string }
+  /** A new CA key was made but the CA not finished; retrying replaces it.
+   *  `notTouched` says that what it lacked was the touch for its signature. */
+  | { kind: "interrupted"; message: string; notTouched: boolean }
   | { kind: "other"; message: string };
 
 /** Whether this is the real app rather than a browser preview. */
@@ -614,6 +621,37 @@ async function pretendKey(pin: string, onTouch: () => void): Promise<void> {
   if (pin === "111111") throw { kind: "not-touched" } satisfies Failure;
 }
 
+// YubiKeys of the sample that were left with a key and no certificate, by
+// a CA whose signature was never touched for.
+const previewUnfinished = new Set<number>();
+
+/** Pretends to put a CA on a YubiKey, and answers as the real thing does:
+ *  the PIN 000000 is wrong; the key is made before a touch is asked for;
+ *  with the PIN 111111 the first touch never comes, which leaves the key
+ *  behind without a certificate; and such a key is in the way until the
+ *  next try says it may be replaced. */
+async function pretendNewCa(key: KeySetup, onTouch: () => void): Promise<void> {
+  await pause(500);
+  if (key.pin === "000000") throw { kind: "wrong-pin", attemptsLeft: 2 } satisfies Failure;
+  const leftBehind = previewUnfinished.has(key.serial);
+  if (leftBehind && !key.replace) {
+    throw { kind: "other", message: "slot 9c of this YubiKey is already in use" } satisfies Failure;
+  }
+  await pause(900);
+  onTouch();
+  const untouched = key.pin === "111111" && !leftBehind;
+  await pause(untouched ? 2500 : 1800);
+  if (untouched) {
+    previewUnfinished.add(key.serial);
+    throw {
+      kind: "interrupted",
+      message: "the YubiKey did not sign; it was probably not touched in time",
+      notTouched: true,
+    } satisfies Failure;
+  }
+  previewUnfinished.delete(key.serial);
+}
+
 /** What the sample's next revocation list of a CA has to name. */
 function sampleRevoked(role: CaRole): { serial: string }[] {
   const certificates: { serial: string; issuedBy: CaRole }[] = [
@@ -635,8 +673,11 @@ function sampleRevocation(role: CaRole): Revocation {
     number: number || null,
     nextUpdate: number ? fromNow(330) : null,
     unlisted: revoked.filter((c) => !previewListed.has(c.serial)).length,
+    replacedHadList: role === "issuing" && previewReplacedHadList,
   };
 }
+// The sample's issuing CA was replaced after it had signed a list.
+let previewReplacedHadList = false;
 let previewHasPki = false;
 let previewAdopted = false;
 let previewIssuingKnown = true;
@@ -674,6 +715,7 @@ const sampleKey = (
   factoryCredentials: false,
   factoryPin: false,
   slotInUse: true,
+  keyWithoutCertificate: false,
   otherSlots: [],
   ca: {
     role,
@@ -722,18 +764,18 @@ const sample = {
     };
   },
   createRoot: async (key: KeySetup, onTouch: () => void): Promise<{ notAfter: string }> => {
-    await pretendKey(key.pin, onTouch);
+    await pretendNewCa(key, onTouch);
     return { notAfter: fromNow(7305) };
   },
   createRootAlone: async (request: RootAloneSetup, onTouch: () => void): Promise<Pki> => {
-    await pretendKey(request.key.pin, onTouch);
+    await pretendNewCa(request.key, onTouch);
     previewAdopted = true;
     previewIssuingKnown = false;
     previewAlone = true;
     return sample.pki(request.workspacePath);
   },
   createIssuing: async (request: IssuingSetup, onTouch: () => void): Promise<Pki> => {
-    await pretendKey(request.key.pin, onTouch);
+    await pretendNewCa(request.key, onTouch);
     previewAdopted = true;
     previewIssuingKnown = true;
     return sample.pki(request.workspacePath);
@@ -744,8 +786,11 @@ const sample = {
       await pause(500);
       throw { kind: "wrong-pin", attemptsLeft: 2, serial: 20000001 } satisfies Failure;
     }
-    await pretendKey(request.key.pin, onTouch);
+    await pretendNewCa(request.key, onTouch);
     if (request.replacing) {
+      // The old CA's list goes with it; the new one has none yet.
+      previewReplacedHadList ||= previewListNumber.issuing > 0;
+      previewListNumber.issuing = 0;
       const revokedAt = request.revokeReplaced ? new Date().toISOString() : null;
       previewRetired.push({
         subject: `CN=${previewIssuingCa.name}`,
@@ -969,7 +1014,17 @@ const sample = {
       factoryCredentials: true,
       factoryPin: true,
       slotInUse: false,
+      keyWithoutCertificate: false,
       otherSlots: [],
+      ca: null,
+    });
+    // Given a PIN by then, and left with a key that has no certificate.
+    const unfinished = (key: Device): Device => ({
+      ...key,
+      factoryCredentials: false,
+      factoryPin: false,
+      slotInUse: true,
+      keyWithoutCertificate: true,
       ca: null,
     });
     const before: Record<string, Device[]> = {
@@ -995,7 +1050,13 @@ const sample = {
     return {
       // Once a PKI is open the root is "back in the safe". A key that was
       // reset is as it came out of its box.
-      usable: connected.map((key) => (previewReset.has(key.serial) ? fresh(key.serial) : key)),
+      usable: connected.map((key) =>
+        previewReset.has(key.serial)
+          ? fresh(key.serial)
+          : previewUnfinished.has(key.serial)
+            ? unfinished(key)
+            : key,
+      ),
       unusable: [],
     };
   },

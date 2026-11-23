@@ -25,7 +25,7 @@ use yca_core::{
 use zeroize::Zeroizing;
 
 use crate::adopt::keep_attestation;
-use crate::issue::{Failure, TOUCH_EVENT, open_ca, other};
+use crate::issue::{Failure, TOUCH_EVENT, open_ca_quietly, other};
 use crate::{KeyLock, PkiView, pki_view, timestamp};
 
 /// One YubiKey and the CA it is to get.
@@ -72,13 +72,16 @@ fn root(app: &AppHandle, key: KeySetup) -> Result<RootCreated, Failure> {
 
 fn make_root(app: &AppHandle, key: &KeySetup) -> Result<Authority<YubiKeySigner>, Failure> {
     let pin = ready_key(key)?;
-    // The new key signs its own certificate, and for that it wants a touch.
-    let _ = app.emit(TOUCH_EVENT, key.serial);
     let (authority, _) = Authority::create_root_on_yubikey(
         key.serial,
         &pin,
         &new_ca(key),
         OffsetDateTime::now_utc(),
+        // The new key signs its own certificate, and for that it wants a
+        // touch: said when it starts to blink, not while it is being made.
+        || {
+            let _ = app.emit(TOUCH_EVENT, key.serial);
+        },
     )?;
     Ok(authority)
 }
@@ -196,14 +199,21 @@ fn make_issuing(
     key: &KeySetup,
 ) -> Result<Authority<YubiKeySigner>, Failure> {
     let pin = ready_key(key)?;
-    // The root signs the new CA, so it is the root's key that blinks.
-    let _ = app.emit(TOUCH_EVENT, root_serial);
     let (issuing, _) = Authority::create_issuing_on_yubikey(
         root,
         key.serial,
         &pin,
         &new_ca(key),
         OffsetDateTime::now_utc(),
+        // The root signs the new CA, so it is the root's key that blinks
+        // and wants the touch. Said only once it does: while the new key
+        // is being made, the other YubiKey flickers, and a window that
+        // asked for a touch by then would have that one touched.
+        || {
+            if root.key().touch_required() {
+                let _ = app.emit(TOUCH_EVENT, root_serial);
+            }
+        },
     )
     .map_err(|e| match (e, root.key().take_last_error()) {
         // The new key exists by now; say why the root did not sign.
@@ -270,7 +280,9 @@ fn added_issuing(app: &AppHandle, request: IssuingAddition) -> Result<PkiView, F
         ));
     }
     // Two PINs are asked for here, so a refused one names its YubiKey.
-    let root = open_ca(app, &store, CaRole::Root, Zeroizing::new(request.root_pin))
+    // Opened without a word to the window: the root signs last, once the
+    // new key is made, and only then wants its touch.
+    let (root, _) = open_ca_quietly(&store, CaRole::Root, Zeroizing::new(request.root_pin))
         .map_err(|failure| failure.on_key(root_serial))?;
 
     let issuing = make_issuing(app, &root, root_serial, &request.key)

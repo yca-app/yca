@@ -871,7 +871,12 @@ fn devices() -> Result<()> {
         if !other.is_empty() {
             say!("  other slots:   {}", other.join(", "));
         }
-        if key.ca.is_none() && key.signature_slot_in_use() {
+        if key.key_without_certificate {
+            say!(
+                "  note: slot 9c holds a key without a certificate, probably from an \
+                 interrupted setup"
+            );
+        } else if key.ca.is_none() && key.signature_slot_holds_certificate() {
             say!("  note: slot 9c holds a certificate that is not a CA");
         }
     }
@@ -1528,12 +1533,13 @@ fn init_root(name: &str, serial: u32, key: CaKey, replace: bool, out: &Path) -> 
     let device = target_for_new_ca(&found, serial, "a root CA", replace)?;
     let pin = pin_for_new_ca(device)?;
     say!("Generating the key inside the YubiKey...");
-    announce_touch(found.usable.len(), serial);
+    let connected = found.usable.len();
     let created = Authority::create_root_on_yubikey(
         serial,
         &pin,
         &new_ca(name, key, replace),
         OffsetDateTime::now_utc(),
+        || announce_touch(connected, serial),
     );
     drop(pin);
     let (root, attestation) = created.map_err(|e| explain_setup_error(e, serial))?;
@@ -1609,13 +1615,23 @@ fn init_issuing(
     drop(root_pin);
 
     say!("Generating the key inside YubiKey {serial}...");
-    say!(
-        "Touch the ROOT YubiKey (serial {}) when it starts blinking; it signs the new CA.",
-        root_device.serial
-    );
     let now = OffsetDateTime::now_utc();
-    let created =
-        Authority::create_issuing_on_yubikey(&root, serial, &pin, &new_ca(name, key, replace), now);
+    let root_serial = root_device.serial;
+    let created = Authority::create_issuing_on_yubikey(
+        &root,
+        serial,
+        &pin,
+        &new_ca(name, key, replace),
+        now,
+        // Said when the root starts to blink: before that it is the new
+        // key's YubiKey that flickers, and that one wants no touch.
+        || {
+            say!(
+                "Touch the ROOT YubiKey (serial {root_serial}) now: it blinks and signs the new CA."
+            );
+            say!("Touching the other one signs nothing and may type a one-time code here.");
+        },
+    );
     drop(pin);
     let (issuing, attestation) = created.map_err(|e| {
         // If it was the root that refused to sign, say why.
@@ -1688,8 +1704,15 @@ fn init_issuing_under_throwaway_root(
         .context("could not generate the throwaway root key")?;
     let root = Authority::create_root("yca throwaway Root CA", root_key, now)?;
     say!("Generating the key inside YubiKey {serial}...");
-    let created =
-        Authority::create_issuing_on_yubikey(&root, serial, &pin, &new_ca(name, key, replace), now);
+    // The root is in memory and signs without anybody's touch.
+    let created = Authority::create_issuing_on_yubikey(
+        &root,
+        serial,
+        &pin,
+        &new_ca(name, key, replace),
+        now,
+        || {},
+    );
     drop(pin);
     let (issuing, attestation) = created.map_err(|e| explain_setup_error(e, serial))?;
 
@@ -1730,6 +1753,10 @@ fn target_for_new_ca<'a>(
 
     let occupant = match &device.ca {
         Some(ca) => Some(format!("the {} \"{}\"", ca.role, ca.subject)),
+        None if device.key_without_certificate => Some(
+            "a key without a certificate in slot 9c (probably from an interrupted setup)"
+                .to_owned(),
+        ),
         None if device.signature_slot_in_use() => Some("a certificate in slot 9c".to_owned()),
         None => None,
     };
@@ -1884,6 +1911,7 @@ fn reset(serial: u32) -> Result<()> {
     say!("YubiKey {serial} (firmware {major}.{minor}.{patch}) holds in its PIV application:");
     match &device.ca {
         Some(ca) => say!("  slot 9c: the {} \"{}\"", ca.role, ca.subject),
+        None if device.key_without_certificate => say!("  slot 9c: a key without a certificate"),
         None if device.signature_slot_in_use() => say!("  slot 9c: a certificate"),
         None => {}
     }

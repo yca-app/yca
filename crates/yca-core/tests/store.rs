@@ -671,16 +671,87 @@ fn the_revocation_list_of_a_replaced_issuing_ca_is_not_taken_for_the_new_ones() 
     assert_eq!(kept.iter().filter(|name| name.ends_with(".crl")).count(), 1);
     let status = pki.store.crl_status(CaRole::Issuing, at).unwrap();
     assert_eq!((status.number, status.next_update), (None, None));
+    // Devices may have been given the old CA's list, so one is expected
+    // of the new CA.
+    assert!(status.replaced_had_list);
 
     // A list another CA signed, put where the current one's belongs, as a
     // workspace of before this was fixed has it, is not taken for it
-    // either.
+    // either. It alone says that the replaced CA had a list.
+    for name in kept.iter().filter(|name| name.contains(".crl")) {
+        fs::remove_file(dir.join("retired").join(name)).unwrap();
+    }
+    let reopened = Store::open(&dir).unwrap();
+    assert!(
+        !reopened
+            .crl_status(CaRole::Issuing, at)
+            .unwrap()
+            .replaced_had_list
+    );
     fs::write(dir.join("crl/issuing.crl.pem"), list.pem()).unwrap();
     let status = Store::open(&dir)
         .unwrap()
         .crl_status(CaRole::Issuing, at)
         .unwrap();
     assert_eq!((status.number, status.next_update), (None, None));
+    assert!(status.replaced_had_list);
+}
+
+#[test]
+fn a_list_is_expected_only_of_a_ca_that_replaced_one_with_a_list() {
+    // A new authority has revoked nothing and nobody was given a list of
+    // it: neither CA is missing one.
+    let mut pki = pki();
+    let at = now();
+    for role in [CaRole::Root, CaRole::Issuing] {
+        let status = pki.store.crl_status(role, at).unwrap();
+        assert_eq!(status.number, None);
+        assert!(!status.replaced_had_list);
+    }
+
+    // An issuing CA that takes over from one that never signed a list is
+    // missing none either.
+    let second = pki
+        .root
+        .create_issuing("Second Issuing CA", key(), at)
+        .unwrap();
+    pki.store
+        .set_issuing(second.certificate_der(), 2002)
+        .unwrap();
+    assert!(
+        !pki.store
+            .crl_status(CaRole::Issuing, at)
+            .unwrap()
+            .replaced_had_list
+    );
+
+    // Once an issuing CA has signed one, the CA that takes over from it
+    // is expected to, until it has. The root took over from nobody.
+    let list = second.revocation_list(&[], 1, at).unwrap();
+    pki.store.save_crl(CaRole::Issuing, &list).unwrap();
+    let third = pki
+        .root
+        .create_issuing("Third Issuing CA", key(), at)
+        .unwrap();
+    pki.store
+        .set_issuing(third.certificate_der(), 2003)
+        .unwrap();
+    let status = pki.store.crl_status(CaRole::Issuing, at).unwrap();
+    assert_eq!(status.number, None);
+    assert!(status.replaced_had_list);
+    assert!(
+        !pki.store
+            .crl_status(CaRole::Root, at)
+            .unwrap()
+            .replaced_had_list
+    );
+
+    let own = third.revocation_list(&[], 1, at).unwrap();
+    pki.store.save_crl(CaRole::Issuing, &own).unwrap();
+    assert_eq!(
+        pki.store.crl_status(CaRole::Issuing, at).unwrap().number,
+        Some(1)
+    );
 }
 
 #[test]

@@ -211,9 +211,11 @@ export function Sidebar({
                   <p className="pr-6 pl-6">
                     {device.ca
                       ? t.holdsOtherCa(commonName(device.ca.subject))
-                      : device.slotInUse
-                        ? t.holdsNotCa
-                        : t.holdsNoCa}
+                      : device.keyWithoutCertificate
+                        ? t.holdsLoneKey
+                        : device.slotInUse
+                          ? t.holdsNotCa
+                          : t.holdsNoCa}
                   </p>
                 </li>
               ))}

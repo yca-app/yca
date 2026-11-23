@@ -159,6 +159,7 @@ pub(crate) mod fixtures {
             pin_attempts_left: 3,
             factory: FactoryCredentials::default(),
             occupied_slots: Vec::new(),
+            key_without_certificate: false,
             ca: Some(StoredCa {
                 subject: "CN=Test".to_owned(),
                 role,
@@ -282,6 +283,39 @@ mod tests {
             issuing: None,
         };
         assert_eq!(same(Some(&alone)), [Some(true), Some(false)]);
+    }
+
+    #[test]
+    fn a_key_left_by_a_ca_that_was_not_finished_is_shown_for_what_it_is() {
+        let at = OffsetDateTime::now_utc();
+        let root = Authority::create_root("Root", key(), at).unwrap();
+        // Given up between the key and its certificate.
+        let mut unfinished = yubikey(2, CaRole::Root, &root);
+        unfinished.ca = None;
+        unfinished.key_without_certificate = true;
+        let mut empty = yubikey(3, CaRole::Root, &root);
+        empty.ca = None;
+        let view = devices_view(
+            Devices {
+                usable: vec![yubikey(1, CaRole::Root, &root), unfinished, empty],
+                unusable: Vec::new(),
+            },
+            None,
+            None,
+        );
+
+        // A new CA would destroy the key as it would a CA, so the window
+        // has to ask first; an empty slot is free.
+        let shown: Vec<(bool, bool)> = view
+            .usable
+            .iter()
+            .map(|device| (device.slot_in_use, device.key_without_certificate))
+            .collect();
+        assert_eq!(shown, [(true, false), (true, true), (false, false)]);
+        assert_eq!(
+            serde_json::to_value(&view).unwrap()["usable"][1]["keyWithoutCertificate"],
+            true
+        );
     }
 
     #[test]

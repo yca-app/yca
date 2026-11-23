@@ -1062,9 +1062,14 @@ function whatDeletingMeans(certificate: Certificate): string {
 
 /**
  * What has to be said about the revocation lists: a CA whose list does not
- * name everything revoked, one that has signed certificates but no list
- * yet, or one whose list is about to run out. A device refuses a revoked
- * certificate only once it has a list that names it.
+ * name everything revoked, one whose list is about to run out, or an
+ * issuing CA that took over from one with a list and has none of its own
+ * yet. A device refuses a revoked certificate only once it has a list that
+ * names it.
+ *
+ * A CA that has revoked nothing and never had a list is told nothing: there
+ * is nothing to hand to devices, and a new authority should not start out
+ * with a warning.
  */
 function listNotices(pki: Pki): { role: CaRole; text: string; hint: string }[] {
   const soon = 30 * 24 * 60 * 60 * 1000;
@@ -1072,19 +1077,19 @@ function listNotices(pki: Pki): { role: CaRole; text: string; hint: string }[] {
   for (const role of ["issuing", "root"] as const) {
     const ca = role === "root" ? pki.root : pki.issuing;
     if (!ca) continue;
-    const { unlisted, nextUpdate, number } = ca.revocation;
+    const { unlisted, nextUpdate, number, replacedHadList } = ca.revocation;
     const name = t.roleInText[role];
-    // What a device that checks lists would refuse while the CA has none:
-    // the certificates it signed that are still in use, and for the root
-    // the issuing CA, through which every other one hangs on it.
-    const signedSome =
-      (role === "root" && pki.issuing !== null) ||
+    // Devices that were given the list of the CA this one replaced check
+    // lists, and have none for what this CA signed and is still in use.
+    const owesList =
+      number === null &&
+      replacedHadList &&
       pki.certificates.some(
         (c) => c.issuedBy === role && c.issuer === "current" && c.status !== "expired",
       );
     if (unlisted > 0) {
       notices.push({ role, text: t.unlisted(unlisted, name), hint: t.unlistedHint(unlisted) });
-    } else if (number === null && signedSome) {
+    } else if (owesList) {
       notices.push({ role, text: t.listMissing(name), hint: t.listMissingHint });
     } else if (nextUpdate && new Date(nextUpdate).getTime() - Date.now() < soon) {
       const date = formatDate(nextUpdate);
@@ -1163,9 +1168,11 @@ function Welcome({
                       <span className={cn("block font-medium", leftOut && "text-muted-foreground")}>
                         {key.ca
                           ? t.holdsCa(t.role[key.ca.role], commonName(key.ca.subject))
-                          : key.slotInUse
-                            ? t.holdsNotCa
-                            : t.holdsNoCa}
+                          : key.keyWithoutCertificate
+                            ? t.holdsLoneKey
+                            : key.slotInUse
+                              ? t.holdsNotCa
+                              : t.holdsNoCa}
                       </span>
                       {/* Which key it is: two that look alike are told apart
                           by serial number, and what one of them can do by

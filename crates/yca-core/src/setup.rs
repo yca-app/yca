@@ -11,7 +11,7 @@ use yubikey::certificate::{CertInfo, Certificate};
 use yubikey::piv::{self, AlgorithmId, SlotId};
 use yubikey::{MgmKey, PinPolicy, TouchPolicy, YubiKey};
 
-use crate::device::{CA_SLOT, FactoryCredentials, SlotKey, device_error, release};
+use crate::device::{CA_SLOT, FactoryCredentials, SlotKey, device_error, release, slot_holds_key};
 use crate::signer::{checked_pin, open_device};
 use crate::{Authority, Error, SigningKey, YubiKeySigner};
 
@@ -86,13 +86,18 @@ impl Authority<YubiKeySigner> {
     /// The key is created so that every signature needs the PIN and a
     /// touch; that cannot be changed afterwards. Signing the root
     /// certificate is the first such signature, so this waits for a touch.
+    /// `before_signing` is called once the key is made and that signature
+    /// is about to be asked for: the moment to say that the YubiKey wants
+    /// its touch now.
     pub fn create_root_on_yubikey(
         serial: u32,
         pin: &str,
         root: &NewCa<'_>,
         now: OffsetDateTime,
+        before_signing: impl FnOnce(),
     ) -> Result<(Self, Option<Attestation>), Error> {
         let signer = new_ca_key(serial, pin, root)?;
+        before_signing();
         let finish = || -> Result<(Vec<u8>, Option<Attestation>), Error> {
             // Signing through a reference keeps the signer here, where it
             // can say why a signature failed.
@@ -116,16 +121,21 @@ impl Authority<YubiKeySigner> {
     /// `serial` and `pin` belong to the YubiKey that will hold the issuing
     /// CA. The signature comes from the root, so it is the root's YubiKey
     /// that waits for a touch. The new key signs nothing here.
+    /// `before_signing` is called once the new key is made and the root is
+    /// about to sign: not before, because while the key is being made it
+    /// is the other YubiKey that flickers, and that one wants no touch.
     pub fn create_issuing_on_yubikey<R: SigningKey>(
         root: &Authority<R>,
         serial: u32,
         pin: &str,
         issuing: &NewCa<'_>,
         now: OffsetDateTime,
+        before_signing: impl FnOnce(),
     ) -> Result<(Self, Option<Attestation>), Error> {
         // Before anything is generated: a root that cannot sign any more.
         root.ensure_not_expired(now)?;
         let signer = new_ca_key(serial, pin, issuing)?;
+        before_signing();
         let finish = || -> Result<(Vec<u8>, Option<Attestation>), Error> {
             let certificate = root
                 .create_issuing(issuing.name, &signer, now)?
@@ -211,9 +221,10 @@ pub fn attest_ca_on_yubikey(serial: u32) -> Result<Option<Attestation>, Error> {
     attestation
 }
 
-/// Whether slot 9c holds a certificate or a key.
+/// Whether slot 9c holds a certificate or a key. A look at the connected
+/// YubiKeys says the same of it: [`crate::device::Device::signature_slot_in_use`].
 fn slot_in_use(yubikey: &mut YubiKey) -> bool {
-    Certificate::read(yubikey, CA_SLOT).is_ok() || piv::metadata(yubikey, CA_SLOT).is_ok()
+    Certificate::read(yubikey, CA_SLOT).is_ok() || slot_holds_key(yubikey)
 }
 
 fn read_ca_certificate(yubikey: &mut YubiKey) -> Result<Vec<u8>, Error> {

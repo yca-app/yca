@@ -79,6 +79,14 @@ export function SetupWizard({ devices, workspace, onCancel, onCreated }: Props) 
   const keys = devices?.usable ?? [];
   const rootKey = keys.find((key) => key.serial === rootSerial);
   const issuingKey = keys.find((key) => key.serial === issuingSerial);
+  // A YubiKey that is pulled out in the middle of its step stays the key
+  // of that step, as it was when last seen: the step says to connect it
+  // again and keeps what was typed and what it knows of the key. Without
+  // that, the step had nothing to show, and came back knowing nothing.
+  const seen = useSeen(keys);
+  const rootOfStep = rootKey ?? (rootSerial === null ? undefined : seen.get(rootSerial));
+  const issuingOfStep =
+    issuingKey ?? (issuingSerial === null ? undefined : seen.get(issuingSerial));
   const keysOk =
     rootName.trim() !== "" &&
     rootKey !== undefined &&
@@ -258,13 +266,14 @@ export function SetupWizard({ devices, workspace, onCancel, onCreated }: Props) 
           </form>
         )}
 
-        {at === "root" && rootKey && (
+        {at === "root" && rootOfStep && (
           <KeyStep
             key="root"
             role="root"
             name={rootName.trim()}
-            device={rootKey}
-            touchSerial={rootKey.serial}
+            device={rootOfStep}
+            connected={rootKey !== undefined}
+            touchSerial={rootOfStep.serial}
             onCancel={onCancel}
             onBack={() => setStep("keys")}
             // With one YubiKey the root is the whole authority, and its
@@ -283,12 +292,13 @@ export function SetupWizard({ devices, workspace, onCancel, onCreated }: Props) 
           />
         )}
 
-        {at === "issuing" && workspace && issuingKey && rootSerial !== null && (
+        {at === "issuing" && workspace && issuingOfStep && rootSerial !== null && (
           <KeyStep
             key="added"
             role="issuing"
             name={issuingName.trim()}
-            device={issuingKey}
+            device={issuingOfStep}
+            connected={issuingKey !== undefined}
             touchSerial={rootSerial}
             signer={{ serial: rootSerial, name: rootName, connected: rootKey !== undefined }}
             onCancel={onCancel}
@@ -310,13 +320,18 @@ export function SetupWizard({ devices, workspace, onCancel, onCreated }: Props) 
           />
         )}
 
-        {at === "issuing" && !workspace && issuingKey && rootSerial !== null && (
+        {at === "issuing" && !workspace && issuingOfStep && rootSerial !== null && (
           <KeyStep
             key="issuing"
             role="issuing"
             name={issuingName.trim()}
-            device={issuingKey}
+            device={issuingOfStep}
+            connected={issuingKey !== undefined}
             touchSerial={rootSerial}
+            // The root CA was made in the step before, with a touch of
+            // its YubiKey, and its PIN is still known from there.
+            touchedBefore={rootMade}
+            alsoNeeded={rootKey === undefined ? rootSerial : undefined}
             before={rootMade ? t.rootDone(rootName.trim()) : undefined}
             next={rootMade ? t.keepRootConnected : undefined}
             onCancel={onCancel}
@@ -335,6 +350,21 @@ export function SetupWizard({ devices, workspace, onCancel, onCreated }: Props) 
       </div>
     </div>
   );
+}
+
+/** Every YubiKey that was connected since the wizard came up, as it was
+ *  when it was last seen. */
+function useSeen(keys: Device[]): Map<number, Device> {
+  const [seen, setSeen] = useState(() => new Map<number, Device>());
+  // Kept up while rendering, so that a key is known from the moment it
+  // shows up; with nothing new to note, nothing is set.
+  if (keys.some((key) => seen.get(key.serial) !== key)) {
+    const next = new Map(seen);
+    for (const key of keys) next.set(key.serial, key);
+    setSeen(next);
+    return next;
+  }
+  return seen;
 }
 
 /**
@@ -614,9 +644,7 @@ function KeyState({
   if (device.slotInUse) {
     return (
       <span className="mt-0.5 block text-xs text-amber-700 dark:text-amber-400">
-        {device.ca
-          ? t.keyHolds(t.roleInText[device.ca.role], commonName(device.ca.subject))
-          : t.keyHoldsSomething}
+        {holds(device)}
       </span>
     );
   }
@@ -627,6 +655,23 @@ function KeyState({
   );
 }
 
+/** What the CA slot of a YubiKey holds that a new CA would destroy. */
+function holds(device: Device): string {
+  if (device.ca) return t.keyHolds(t.roleInText[device.ca.role], commonName(device.ca.subject));
+  return device.keyWithoutCertificate ? t.keyHoldsLoneKey : t.keyHoldsSomething;
+}
+
+/** Failures that are about a YubiKey, and so say nothing against the
+ *  folder that was chosen for the workspace. */
+const aboutKey: Failure["kind"][] = [
+  "wrong-pin",
+  "pin-locked",
+  "last-attempt",
+  "not-touched",
+  "key-missing",
+  "interrupted",
+];
+
 /**
  * One YubiKey getting its CA: the PIN (a new one, with a PUK, for a key
  * fresh from the box), the confirmation if something is destroyed, and
@@ -636,7 +681,10 @@ function KeyStep({
   role,
   name,
   device,
+  connected,
   touchSerial,
+  touchedBefore,
+  alsoNeeded,
   before,
   next,
   signer,
@@ -647,9 +695,19 @@ function KeyStep({
 }: {
   role: CaRole;
   name: string;
+  /** The YubiKey that gets the CA, as it was when last seen. */
   device: Device;
+  /** Whether it is plugged in right now. Pulled out, the step waits for
+   *  it and keeps what was typed. */
+  connected: boolean;
   /** The YubiKey that signs and so waits for the touch. */
   touchSerial: number;
+  /** That YubiKey was touched a moment ago, for the CA made before this
+   *  one: a way to tell it from the other without reading a number. */
+  touchedBefore?: boolean;
+  /** Another YubiKey this step needs and does not find: the root CA that
+   *  signs, where its PIN is known already. */
+  alsoNeeded?: number;
   /** Said above the form, about what happened so far. */
   before?: string;
   /** Said under that, about what to do now; told whether this YubiKey is
@@ -681,13 +739,20 @@ function KeyStep({
   const [pukRepeat, setPukRepeat] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [signerPin, setSignerPin] = useState("");
-  // A failed attempt may have left an unfinished key in the slot.
+  // A failed attempt may have left an unfinished key in the slot. It is
+  // this step's own, so the next attempt replaces it without asking: what
+  // the slot held before is gone by then, and that was asked about.
   const [interrupted, setInterrupted] = useState(false);
+  // Where the workspace goes is asked once; trying again does not ask anew.
+  const [chosenPlace, setChosenPlace] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [touching, setTouching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const destroys = device.slotInUse;
+  const destroys = device.slotInUse && !interrupted;
+  // By the time a key was made, a YubiKey fresh from the box has the PIN
+  // and PUK chosen here. They cannot be chosen again.
+  const credentialsSet = fresh && interrupted;
   const lengthOk = (value: string) => value.length >= 6 && value.length <= 8;
   const credentialsOk =
     (fresh
@@ -695,12 +760,15 @@ function KeyStep({
       : pin.length >= 6) &&
     (!signer || (signer.connected && signerPin.length >= 6));
   const confirmed = !destroys || confirmation.trim() === String(device.serial);
+  // Both YubiKeys have to be there before anything is started.
+  const ready = connected && alsoNeeded === undefined && credentialsOk && confirmed;
 
   async function start() {
     setError(null);
-    const where = place ? await place() : null;
+    const where = chosenPlace ?? (place ? await place() : null);
     // Nothing has been written yet; the step simply waits.
     if (place && where === null) return;
+    setChosenPlace(where);
     setBusy(true);
     setTouching(false);
     try {
@@ -710,7 +778,7 @@ function KeyStep({
           name,
           pin,
           newPuk: fresh ? puk : null,
-          replace: destroys || interrupted,
+          replace: device.slotInUse || interrupted,
         },
         () => setTouching(true),
         where,
@@ -718,8 +786,18 @@ function KeyStep({
       );
     } catch (reason) {
       const failure = reason as Failure;
-      setError(explain(failure));
+      setError(
+        failure.kind === "interrupted" && failure.notTouched
+          ? // Which of two YubiKeys was not touched is what went wrong.
+            touchSerial === device.serial
+            ? t.failure.untouched
+            : t.failure.untouchedRoot(touchSerial)
+          : explain(failure),
+      );
       if (failure.kind === "interrupted") setInterrupted(true);
+      // Anything else may be about the folder, which is then asked for
+      // again.
+      if (!aboutKey.includes(failure.kind)) setChosenPlace(null);
       // A PIN that was just chosen stays; one that was wrong is typed
       // again, on the key that refused it.
       if (failure.kind === "wrong-pin") {
@@ -732,23 +810,34 @@ function KeyStep({
   }
 
   if (busy) {
+    // Two YubiKeys may be at work here, one after the other: the one that
+    // gets the key, and for an issuing CA the root's, which signs it.
+    // Only the one that signs wants a touch. So one thing is said at a
+    // time, the touch is asked for when that key starts to blink, and its
+    // serial number is the only one shown.
+    const itself = touchSerial === device.serial;
     return (
       <div className="flex flex-col items-center gap-3 rounded-xl border px-6 py-10 text-center">
         {touching ? (
-          <span className="relative flex size-14 items-center justify-center">
-            <span className="absolute inset-0 animate-ping rounded-full bg-primary/20" />
-            <span className="relative flex size-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <Fingerprint className="size-7" strokeWidth={1.5} />
+          <>
+            <span className="relative flex size-14 items-center justify-center">
+              <span className="absolute inset-0 animate-ping rounded-full bg-primary/20" />
+              <span className="relative flex size-14 items-center justify-center rounded-full bg-primary/10 text-primary">
+                <Fingerprint className="size-7" strokeWidth={1.5} />
+              </span>
             </span>
-          </span>
+            <p className="text-xl font-medium">{itself ? t.touchTitle : t.touchRootTitle}</p>
+            <KeyTag serial={touchSerial} className="px-2 py-0.5 text-sm leading-[18px]" />
+            <p className="max-w-sm text-sm text-muted-foreground">
+              {itself ? t.touchHint : touchedBefore ? t.touchRootAgainHint : t.touchRootHint}
+            </p>
+          </>
         ) : (
-          <LoaderCircle className="size-7 animate-spin text-muted-foreground" />
+          <>
+            <LoaderCircle className="size-7 animate-spin text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">{t.makingKey(t.roleInText[role])}</p>
+          </>
         )}
-        <p className="max-w-sm">
-          {role === "root"
-            ? t.creatingRoot(device.serial)
-            : t.creatingIssuing(device.serial, touchSerial)}
-        </p>
       </div>
     );
   }
@@ -758,7 +847,7 @@ function KeyStep({
       className="flex flex-col gap-4"
       onSubmit={(event) => {
         event.preventDefault();
-        if (credentialsOk && confirmed) void start();
+        if (ready) void start();
       }}
     >
       {(before || next) && (
@@ -785,7 +874,12 @@ function KeyStep({
           {t.createOn(t.role[role], name)} <KeyTag serial={device.serial} />
         </p>
         <div className="flex flex-col gap-4 px-4 py-3">
-          {fresh ? (
+          {!connected ? (
+            // Pulled out: what was typed is kept, and comes back with it.
+            <p className="text-amber-700 dark:text-amber-400">{t.connectKey(device.serial)}</p>
+          ) : credentialsSet ? (
+            <p className="text-muted-foreground">{t.credentialsSet}</p>
+          ) : fresh ? (
             <>
               <div className="grid max-w-md grid-cols-2 gap-3">
                 <Secret label={t.newPin} value={pin} onChange={setPin} autoFocus />
@@ -827,13 +921,11 @@ function KeyStep({
             />
           )}
 
-          {destroys && (
+          {connected && destroys && (
             <div className="flex flex-col gap-1.5 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2.5">
               <p className="flex items-start gap-2 text-destructive">
                 <TriangleAlert className="mt-0.5 size-4 shrink-0" />
-                {device.ca
-                  ? t.keyHolds(t.roleInText[device.ca.role], commonName(device.ca.subject))
-                  : t.keyHoldsSomething}
+                {holds(device)}
               </p>
               <Label className="font-normal">{t.destroyConfirm(device.serial)}</Label>
               <Input
@@ -870,6 +962,10 @@ function KeyStep({
         </section>
       )}
 
+      {alsoNeeded !== undefined && (
+        <p className="text-amber-700 dark:text-amber-400">{t.connectKey(alsoNeeded)}</p>
+      )}
+
       {error && (
         <p className="selectable flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-destructive">
           <TriangleAlert className="mt-0.5 size-4 shrink-0" />
@@ -878,11 +974,7 @@ function KeyStep({
       )}
 
       <Footer onCancel={onCancel} onBack={onBack} className="mt-1">
-        <Button
-          type="submit"
-          variant={destroys ? "destructive" : "default"}
-          disabled={!credentialsOk || !confirmed}
-        >
+        <Button type="submit" variant={destroys ? "destructive" : "default"} disabled={!ready}>
           {role === "root" ? t.createRoot : t.createIssuing}
         </Button>
       </Footer>

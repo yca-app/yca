@@ -35,6 +35,9 @@ pub struct DeviceView {
     /// Slot 9c holds a key or a certificate. Putting a new CA on this key
     /// destroys it.
     pub slot_in_use: bool,
+    /// What slot 9c holds is a key without a certificate, left by a CA
+    /// that was not finished. Nothing of use can be signed with it.
+    pub key_without_certificate: bool,
     /// Other PIV slots that hold a certificate, which a reset destroys
     /// along with the CA. The key's own attestation certificate is not
     /// among them: a reset leaves it.
@@ -138,6 +141,10 @@ pub struct RevocationView {
     pub next_update: Option<String>,
     /// Revoked certificates the list does not name yet.
     pub unlisted: usize,
+    /// An issuing CA that this one took the place of had signed a list.
+    /// Devices that were given that one check lists, and so want one of
+    /// this CA too. Without it, a CA with no list is missing nothing.
+    pub replaced_had_list: bool,
 }
 
 #[derive(Serialize)]
@@ -221,6 +228,7 @@ pub fn devices_view(
                 factory_credentials: device.factory.any(),
                 factory_pin: device.factory.pin == Some(true),
                 slot_in_use: device.signature_slot_in_use() || device.ca.is_some(),
+                key_without_certificate: device.key_without_certificate,
                 other_slots: device
                     .occupied_slots
                     .iter()
@@ -312,11 +320,13 @@ fn revocation_view(store: &Store, role: CaRole, now: OffsetDateTime) -> Revocati
             number: status.number,
             next_update: status.next_update.map(timestamp),
             unlisted: status.unlisted,
+            replaced_had_list: status.replaced_had_list,
         },
         Err(_) => RevocationView {
             number: None,
             next_update: None,
             unlisted: store.revoked(role, now).len(),
+            replaced_had_list: false,
         },
     }
 }

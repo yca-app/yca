@@ -427,6 +427,11 @@ pub struct CrlStatus {
     /// Revoked certificates the list does not name. Devices keep accepting
     /// them until they are given a newer list.
     pub unlisted: usize,
+    /// An issuing CA that this one took the place of had signed a list.
+    /// Whoever handed that to devices needs one of this CA as well: a
+    /// device that checks lists refuses certificates it has no list for.
+    /// A CA nobody ever signed a list for is under no such expectation.
+    pub replaced_had_list: bool,
 }
 
 /// Where a certificate stands right now.
@@ -1531,6 +1536,7 @@ impl Store {
             number: None,
             next_update: None,
             unlisted: revoked.len(),
+            replaced_had_list: self.replaced_left_a_list(role),
         };
         let path = self.dir.join(crl_file(role));
         if !path.exists() {
@@ -1540,10 +1546,13 @@ impl Store {
         let (_, list) = CertificateRevocationList::from_der(&der)
             .map_err(|e| Error::Store(format!("could not read {}: {e}", path.display())))?;
         // Only a list this CA signed is its list: one a replaced issuing CA
-        // left behind is not.
+        // left behind is not. It does say that the replaced CA had one.
         let ca_der = self.ca_certificate_der(role)?;
         if list.verify_signature(parse(&ca_der)?.public_key()).is_err() {
-            return Ok(none);
+            return Ok(CrlStatus {
+                replaced_had_list: true,
+                ..none
+            });
         }
         let listed: Vec<String> = list
             .iter_revoked_certificates()
@@ -1562,6 +1571,23 @@ impl Store {
                 .iter()
                 .filter(|entry| !listed.contains(&entry.serial))
                 .count(),
+            replaced_had_list: none.replaced_had_list,
+        })
+    }
+
+    /// Whether an issuing CA that was replaced had signed a revocation
+    /// list: its last one went to the retired CAs along with it.
+    fn replaced_left_a_list(&self, role: CaRole) -> bool {
+        if role != CaRole::Issuing {
+            return false;
+        }
+        let Ok(kept) = fs::read_dir(self.dir.join(RETIRED_DIR)) else {
+            return false;
+        };
+        kept.flatten().any(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.ends_with(".crl.pem") || name.ends_with(".crl")
         })
     }
 

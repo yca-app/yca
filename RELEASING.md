@@ -1,6 +1,6 @@
 # Releasing
 
-How a release of CA for YubiKey is made. GitHub builds it, in the workflow [Release](.github/workflows/release.yml), from a commit on `main`, when a maintainer starts that workflow. The workflow signs the app with a Developer ID certificate, has Apple notarise it, and signs what an installed app updates itself from; all three take secrets that are handed to that workflow alone, and only when it runs from `main`. Nothing becomes public by itself: the workflow leaves a draft, a person tries what was built, and publishes it.
+How a release of CA for YubiKey is made. GitHub builds it, in the workflow [Release](.github/workflows/release.yml), from a commit on `main`, when a maintainer starts that workflow. The workflow builds the app on one machine, and on a second one signs it with a Developer ID certificate, has Apple notarise it, and signs what an installed app updates itself from. All three take secrets, which are handed to that second machine alone, and only when the workflow runs from `main`. Nothing becomes public by itself: the workflow leaves a draft, a person tries what was built, and publishes it.
 
 A release is one disk image with the app in it. The app is built for Macs with Apple silicon, signed with a Developer ID, notarised by Apple, and carries the `yca` command, the licence and the notices of the software it is built from.
 
@@ -10,7 +10,7 @@ It carries no code for Intel. On a Mac with Apple silicon such code would run th
 
 Once, on GitHub, by an owner of the repository:
 
-1. **An environment named `release`** (Settings, Environments), with its deployment branches limited to `main`. The secrets below go into this environment and not among the secrets of the repository, so that no other workflow and no other branch is given them. With yourself as a required reviewer, a run waits for one more click before it gets them.
+1. **An environment named `release`** (Settings, Environments), with its deployment branches limited to `main`. The secrets below go into this environment and not among the secrets of the repository, so that no other workflow and no other branch is given them. With yourself as a required reviewer, a run waits for one more click before it gets them: it builds first, and stops before it signs.
 
 2. **The signing certificate,** as two secrets of that environment. It is the Developer ID Application certificate that comes with membership of the Apple Developer Program, exported from Keychain Access together with its private key as a `.p12` file, with a password chosen for that file:
 
@@ -41,7 +41,7 @@ Once, on GitHub, by an owner of the repository:
 
 5. **Private vulnerability reporting** switched on for the repository, which [SECURITY.md](SECURITY.md) sends people to.
 
-A secret can be replaced but not read back, by anybody. The workflow keeps the name the certificate is in, which every copy of the app shows anyway, out of its log.
+A secret can be replaced but not read back, by anybody. For the time of a run, the certificate is in a keychain of that run's own, where its key can sign through `codesign` and cannot be taken out again. The workflow keeps the name the certificate is in, which every copy of the app shows anyway, out of its log.
 
 Whoever takes the project over puts a certificate and a notarisation key of their own into the secrets for them, and the app is then signed in their name. The update key stays as it is: the apps that are installed know no other.
 
@@ -79,7 +79,13 @@ Start the workflow: on the Actions page of the repository (Release, Run workflow
 gh workflow run release.yml --ref main
 ```
 
-It runs `scripts/release.sh` on a fresh copy of the commit, with nothing taken from a cache. The script refuses to start if the two versions differ, the changelog has no dated entry, the working tree has changes, or the signing identity or the notarisation credentials are missing. Then it builds the `yca` command, writes the third-party notices, builds, signs and notarises the app, and checks the result: that the app carries the command in the right version, the licence and the notices, that every program in it is built for Apple silicon and nothing else, that the signature holds all the way down, that the app and the disk image both have Apple's ticket attached and pass Gatekeeper, and that the archive for updates holds that same finished app and is signed with the update key, for this version.
+It runs `scripts/release.sh` in two steps, on two machines, each with a fresh copy of the commit and nothing taken from a cache.
+
+The first machine builds. `scripts/release.sh --build` refuses to start if the two versions differ, the changelog has no dated entry or the working tree has changes. Then it builds the `yca` command, writes the third-party notices and builds the app's own program, and checks that the command says the right version and that both programs are built for Apple silicon and nothing else. Building runs code from everything the app is made of: the build scripts of its Rust packages, and what builds the window. This machine is therefore given no secret. It hands three files to the second machine: the two programs and the notices.
+
+The second machine signs. It installs the bundler without letting any package run a script of its own, and `scripts/release.sh --finish` refuses to start if the signing identity, the notarisation credentials or the update key are missing. The script builds nothing and starts none of the programs it was handed. It puts the app together from them, signs it, has it notarised and packs the disk image, and checks the result: that the app carries the command, the licence and the notices, that every program in it is built for Apple silicon and nothing else, that the signature holds all the way down, that the app and the disk image both have Apple's ticket attached and pass Gatekeeper, and that the archive for updates holds that same finished app and is signed with the update key, for this version.
+
+A package the app depends on can do harm to what is built, on GitHub as anywhere else. What the two machines are for is that it cannot read the update key or use the certificate: a key that was read once stays read, whatever is done about the package afterwards.
 
 What it leaves is a draft release named after the version, which only maintainers see. Its text is the changelog entry followed by the SHA-256 of the disk image, and it has six files:
 
@@ -132,7 +138,7 @@ Afterwards, see that the README tells people where to download it and no longer 
 
 ## Building a release on a Mac
 
-The workflow does nothing a Mac could not do. With the Developer ID Application certificate in the login keychain (`security find-identity -v -p codesigning` shows it, with the name to use below), Rust 1.90 or newer and the Node.js of the checks, the same script builds the same release from a fresh clone of the commit:
+The script can also build a release on a Mac. With the Developer ID Application certificate in the login keychain (`security find-identity -v -p codesigning` shows it, with the name to use below), Rust 1.90 or newer and the Node.js of the checks, the same script builds the same release from a fresh clone of the commit:
 
 ```sh
 npm --prefix app ci
@@ -153,6 +159,8 @@ export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="…"
 
 With an Apple ID and an app-specific password in place of the key for App Store Connect, it sets `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` instead of the three `APPLE_API_` lines. The last two lines are the update key, which a Mac has only if a copy of it was kept: without it the script does not build a release, because the apps that are installed could not update themselves to it. On an Intel Mac the Rust has to be one from rustup, found first, with the target added (`rustup target add aarch64-apple-darwin`).
 
+The script then does both steps one after the other. The first is not given the secrets in its environment, but they are on the same disk as everything it runs, and so is the keychain with the certificate. What the workflow gains from two machines, one Mac does not have.
+
 The files of the release are left in `target/release-files` and its text in `target/release-parts/release-notes.md`, as the workflow attaches them.
 
-`scripts/release.sh --unsigned` builds the app the same way for the Mac it runs on, without signature and disk image. It is for trying the build out, and for whoever builds the app themselves.
+`scripts/release.sh --unsigned` builds the app the same way for the Mac it runs on, without signature and disk image. It is for trying the build out, and for whoever builds the app themselves. With `--build` or `--finish` added, it does one of the two steps alone, as the workflow does: the first leaves its three files in `target/release-built`, where the second takes them from.

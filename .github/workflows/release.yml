@@ -9,10 +9,18 @@ name: Release
 # and builds main and nothing else. Nothing becomes public here: a person
 # tries what was built, and then publishes the draft.
 #
-# This is the one workflow that is given secrets: the Developer ID
-# certificate the app is signed with, the key that asks Apple to notarise
-# it, and the key that updates are signed with. They are kept in the
-# environment "release", which GitHub hands to runs from main only.
+# The work is done on two machines. The first builds the programs from the
+# source, which runs code from everything the app is made of, and is given
+# no secret. The second is given the secrets: the Developer ID certificate
+# the app is signed with, the key that asks Apple to notarise it, and the
+# key that updates are signed with. It builds nothing and starts none of
+# the programs the first one built: it takes them as files, puts the app
+# together, signs it and packs it. A package the app depends on can
+# therefore not read a secret while a release is built.
+#
+# This is the one workflow that is given secrets. They are kept in the
+# environment "release", which GitHub hands to runs from main only, and
+# here to the second job only.
 
 on:
   workflow_dispatch:
@@ -30,16 +38,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build, sign, notarise and draft
+  build:
+    name: Build
     if: github.ref == 'refs/heads/main'
     # Apple silicon, which is all the app is built for.
     runs-on: macos-26
-    timeout-minutes: 60
-    environment: release
+    timeout-minutes: 45
     permissions:
-      # To read the commit, and to draft the release and attach its files.
-      contents: write
+      # To read the commit, and the releases that are out.
+      contents: read
       # To see that the commit has passed its checks.
       checks: read
     steps:
@@ -88,6 +95,59 @@ jobs:
       - name: What the window is built from
         run: npm --prefix app ci
 
+      # The programs and the notices. Whatever runs here, there is no
+      # secret on this machine for it to find.
+      - name: Build
+        run: scripts/release.sh --build
+
+      - name: Hand over what was built
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: built
+          path: target/release-built
+          retention-days: 1
+          if-no-files-found: error
+          # A run that is started once more hands over what it built then.
+          overwrite: true
+
+  finish:
+    name: Sign, notarise and draft
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-26
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      # To read the commit, and to draft the release and attach its files.
+      contents: write
+    steps:
+      # The same commit the first job built: a run has one.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      # Of everything the lock file names, only the bundler is ever started
+      # on this machine, and no package runs a script of its own while it
+      # is put in place. The bundler asks cargo how the workspace is laid
+      # out, and that is all Rust is for here: the one that comes with the
+      # machine will do, and nothing is compiled.
+      - name: The bundler
+        run: |
+          cargo --version
+          npm --prefix app ci --ignore-scripts
+
+      # Three files: the app's program, the `yca` command and the notices.
+      # The script takes them by name and starts none of them.
+      - name: What was built
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: built
+          path: target/release-built
+
       - name: Signing certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -108,8 +168,10 @@ jobs:
           security create-keychain -p "$password" "$keychain"
           security set-keychain-settings -lut 7200 "$keychain"
           security unlock-keychain -p "$password" "$keychain"
+          # The key can sign from here, through codesign and nothing else,
+          # and cannot be taken out of the keychain again.
           security import "$certificate" -P "$APPLE_CERTIFICATE_PASSWORD" -f pkcs12 \
-            -k "$keychain" -T /usr/bin/codesign -T /usr/bin/security
+            -k "$keychain" -x -T /usr/bin/codesign
           rm -f "$certificate"
           # Lets codesign use the key without the dialog nobody is here to
           # answer.
@@ -157,7 +219,7 @@ jobs:
           (umask 077 && printf '%s\n' "$APPLE_API_KEY_P8" >"$key")
           echo "APPLE_API_KEY_PATH=$key" >>"$GITHUB_ENV"
 
-      - name: Build, sign and notarise
+      - name: Sign, notarise and pack
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -169,7 +231,7 @@ jobs:
           # somebody at it, which the bundler leaves out when it runs
           # unattended.
           TAURI_BUNDLER_DMG_IGNORE_CI: true
-        run: scripts/release.sh
+        run: scripts/release.sh --finish
 
       - name: Keep the files of a rehearsal
         if: inputs.rehearsal
@@ -181,6 +243,7 @@ jobs:
             target/release-parts/release-notes.md
           retention-days: 1
           if-no-files-found: error
+          overwrite: true
 
       - name: Draft the release
         if: ${{ !inputs.rehearsal }}

@@ -9,6 +9,11 @@
 #   scripts/release.sh --unsigned  for trying it out: this Mac, no
 #                                  signature, no disk image
 #
+# The release workflow on GitHub runs it, and so can a Mac that has the
+# signing certificate. Either way the files of the release end up in
+# target/release-files, under the names they have on GitHub, and the text
+# that goes with them in target/release-parts/release-notes.md.
+#
 # A release carries no code for Intel. On a Mac with Apple silicon such
 # code would run through Rosetta, which macOS 27 warns about and macOS 28
 # no longer offers, and a program running through Rosetta that starts the
@@ -166,8 +171,44 @@ if ! xcrun stapler validate "$image" >/dev/null 2>&1; then
 fi
 spctl --assess --type open --context context:primary-signature "$image"
 
+# What goes on GitHub, under the names it has there. A name with a space in
+# it comes back from GitHub with a dot instead, and the checksum file would
+# no longer name the image.
+files="$root/target/release-files"
+rm -rf "$files"
+mkdir -p "$files"
+name="CA-for-YubiKey-$version"
+cp "$image" "$files/$name.dmg"
+(cd "$files" && shasum -a 256 "$name.dmg" >"$name.dmg.sha256")
+cp "$parts/THIRD-PARTY-NOTICES.txt" "$files/"
+sum=$(cut -d " " -f 1 "$files/$name.dmg.sha256")
+
+# The text of the release: what the changelog says of this version, and
+# what to hold the download against.
+# shellcheck disable=SC2016
+VERSION="$version" IMAGE="$name.dmg" SUM="$sum" node -e '
+    const { VERSION, IMAGE, SUM } = process.env;
+    const lines = require("fs").readFileSync("CHANGELOG.md", "utf8").split("\n");
+    const rest = lines.slice(lines.findIndex((line) => line.startsWith(`## ${VERSION} `)) + 1);
+    const next = rest.findIndex((line) => line.startsWith("## "));
+    const entry = rest.slice(0, next < 0 ? undefined : next).join("\n").trim();
+    const macos = require("./app/src-tauri/tauri.conf.json").bundle.macOS.minimumSystemVersion;
+    console.log([
+        entry,
+        "",
+        "### Checking the download",
+        "",
+        `SHA-256 of \`${IMAGE}\`:`,
+        "",
+        "```",
+        SUM,
+        "```",
+        "",
+        `The app is signed with a Developer ID and notarised by Apple. It runs on Macs with Apple silicon and macOS ${macos} or newer.`,
+    ].join("\n"));' >"$parts/release-notes.md"
+
 echo
-echo "Release $version:"
-echo "  $image"
-(cd "$(dirname "$image")" && shasum -a 256 "$(basename "$image")")
+echo "Release $version, in $files:"
+find "$files" -type f -exec basename {} \; | sort | sed 's/^/  /'
+echo "SHA-256 of the disk image: $sum"
 codesign --display --verbose=2 "$app" 2>&1 | grep -E "^(Authority|TeamIdentifier)=" | sed 's/^/  /'

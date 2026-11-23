@@ -7,6 +7,7 @@ What changed in each release, written for the people who use the app. The format
 ### Changed
 
 - **The touch for a new issuing CA is asked for plainly.** The root CA signs a new issuing CA, so it is the root's YubiKey that has to be touched, not the one that is being written to. The wizard now says so as a heading at the moment that YubiKey starts to blink, shows only its serial number, and names it if the touch did not come. The `yca init-issuing` command says it at the same moment.
+- **Releases are built by GitHub,** from the public source, by a workflow anyone can read. It signs the app with the same Developer ID, has Apple notarise it and leaves a draft, which a person tries with YubiKeys before publishing it.
 - **A new CA no longer starts out with a warning about revocation lists.** The window said that a CA "has not signed a revocation list yet" as soon as it had signed anything, which for the root CA was right after the wizard. It now says so only of an issuing CA that took the place of one with a list, which devices may be checking. A CA that has revoked nothing owes nobody a list.
 
 ### Fixed

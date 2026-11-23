@@ -1,8 +1,10 @@
 name: Checks
 
 # The same checks CONTRIBUTING.md asks for before a change is sent. None of
-# them needs a YubiKey. Nothing is signed or released from here: a release
-# is built on the maintainer's Mac, see RELEASING.md.
+# them needs a YubiKey. Nothing is signed or released from here: that is
+# the release workflow's, which a maintainer starts, see RELEASING.md. It
+# builds only a commit that has passed these checks, which it finds by the
+# name of the job below.
 
 on:
   push:

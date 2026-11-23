@@ -25,7 +25,9 @@ interface Props {
   onOpenAnother: () => void;
   onRefresh: () => void;
   /** Adds the issuing CA from a connected YubiKey to this workspace. */
-  onAdoptIssuing: () => void;
+  /** Called with the serial number of the YubiKey whose issuing CA the
+   *  sidebar offered. */
+  onAdoptIssuing: (serial: number) => void;
   /** Starts making an issuing CA for this workspace on a second YubiKey. */
   onAddIssuing: () => void;
   /** Starts making an issuing CA to take the place of the one there is. */
@@ -84,7 +86,7 @@ export function Sidebar({
       device={connected.find((device) => device.serial === pki.issuing?.yubikey)}
       known={devices !== null}
       candidate={candidate}
-      onAdopt={onAdoptIssuing}
+      onAdopt={() => candidate && onAdoptIssuing(candidate.serial)}
       onAdd={onAddIssuing}
       onReplace={onReplaceIssuing}
       onKeyTask={onKeyTask}

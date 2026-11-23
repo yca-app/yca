@@ -2467,3 +2467,61 @@ fn a_link_where_a_file_is_written_through_is_not_followed() {
             .is_some()
     );
 }
+
+#[test]
+fn an_issuing_ca_that_was_replaced_is_not_put_back() {
+    let mut pki = pki();
+    let at = now();
+    let second = pki
+        .root
+        .create_issuing("Second Issuing CA", key(), at)
+        .unwrap();
+    pki.store
+        .set_issuing(second.certificate_der(), 2002)
+        .unwrap();
+    let [retired] = pki.store.retired() else {
+        panic!("expected one replaced issuing CA");
+    };
+    let first = retired.serial.clone();
+
+    // Lost, found again and plugged in: it stays replaced.
+    assert!(matches!(
+        pki.store
+            .set_issuing(pki.issuing.certificate_der(), ISSUING_KEY),
+        Err(Error::Store(_))
+    ));
+    // The more so once the root has revoked it.
+    pki.store.revoke_retired(&first, at).unwrap();
+    assert!(matches!(
+        pki.store
+            .set_issuing(pki.issuing.certificate_der(), ISSUING_KEY),
+        Err(Error::Store(_))
+    ));
+
+    let reopened = Store::open(pki.store.dir()).unwrap();
+    assert_eq!(
+        reopened.ca_certificate_der(CaRole::Issuing).unwrap(),
+        second.certificate_der()
+    );
+    assert_eq!(reopened.ca(CaRole::Issuing).unwrap().yubikey, 2002);
+    assert_eq!(reopened.retired().len(), 1);
+}
+
+#[test]
+fn the_same_issuing_ca_found_on_another_yubikey_goes_on_counting_its_lists() {
+    let mut pki = pki();
+    let at = now();
+    let list = pki.issuing.revocation_list(&[], 1, at).unwrap();
+    pki.store.save_crl(CaRole::Issuing, &list).unwrap();
+    assert_eq!(pki.store.next_crl_number(CaRole::Issuing).unwrap(), 2);
+
+    // The same certificate, as on a second YubiKey that carries a copy of
+    // an imported key. It is not a replacement, and the list after the
+    // first is still the second.
+    pki.store
+        .set_issuing(pki.issuing.certificate_der(), 3003)
+        .unwrap();
+    assert!(pki.store.retired().is_empty());
+    assert_eq!(pki.store.ca(CaRole::Issuing).unwrap().yubikey, 3003);
+    assert_eq!(pki.store.next_crl_number(CaRole::Issuing).unwrap(), 2);
+}

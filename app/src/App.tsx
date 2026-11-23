@@ -169,14 +169,19 @@ export default function App() {
     [adopted],
   );
 
-  const adoptIssuing = useCallback(async () => {
-    if (!pki) return;
-    try {
-      adopted(await api.adoptIssuing(pki.path));
-    } catch (reason) {
-      setError(String(reason));
-    }
-  }, [pki, adopted]);
+  // The issuing CA that the sidebar offered, by the serial number of its
+  // YubiKey: what is taken is the one that was shown.
+  const adoptIssuing = useCallback(
+    async (serial: number) => {
+      if (!pki) return;
+      try {
+        adopted(await api.adoptIssuing(pki.path, serial));
+      } catch (reason) {
+        setError(String(reason));
+      }
+    },
+    [pki, adopted],
+  );
 
   // Which issuing CA belongs is judged against the open PKI's root, so
   // the keys are looked at again whenever another folder is opened.

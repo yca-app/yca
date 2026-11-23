@@ -206,10 +206,13 @@ impl Server {
             }
             "adopt_workspace" => {
                 let dir = folder(arguments)?;
+                // Never in place of an issuing CA the workspace has: that
+                // is a person's to decide.
                 crate::adopt(
                     &dir,
                     device_serial(arguments, "root_device")?,
                     device_serial(arguments, "issuing_device")?,
+                    false,
                 )?;
                 Ok(serde_json::to_value(view::workspace(&Store::open(&dir)?)?)?)
             }
@@ -748,8 +751,9 @@ fn tools() -> Value {
             "adopt_workspace",
             "Start a workspace from YubiKeys",
             "Starts a workspace folder from the CAs that are already on the connected YubiKeys, \
-             or adds the issuing CA to an existing workspace. Reads the YubiKeys only and needs \
-             no PIN. To create a new CA, use open_setup.".to_owned(),
+             or adds the issuing CA to an existing workspace that has none. Reads the YubiKeys \
+             only and needs no PIN. It does not replace an issuing CA; to create a new CA or \
+             replace one, use open_setup.".to_owned(),
             json!({
                 "workspace": workspace,
                 "root_device": { "type": "integer", "description": "Serial number of the YubiKey with the root CA, if more than one root is connected." },

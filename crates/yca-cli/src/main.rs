@@ -157,6 +157,11 @@ enum Command {
         /// one is connected.
         #[arg(long)]
         issuing_device: Option<u32>,
+
+        /// Put the connected issuing CA in place of the one the workspace
+        /// has. Without this, a workspace that has an issuing CA keeps it.
+        #[arg(long)]
+        replace_issuing: bool,
     },
 
     /// List the certificates in a workspace folder.
@@ -691,7 +696,8 @@ fn run(command: Command) -> Result<()> {
             store,
             root_device,
             issuing_device,
-        } => adopt(&store, root_device, issuing_device),
+            replace_issuing,
+        } => adopt(&store, root_device, issuing_device, replace_issuing),
         Command::List { store, group } => list(&store, group.as_deref()),
         Command::Group {
             store,
@@ -1019,7 +1025,18 @@ fn sign<T>(
     operation(authority).map_err(|e| authority.key().take_last_error().unwrap_or(e).into())
 }
 
-fn adopt(dir: &Path, root_device: Option<u32>, issuing_device: Option<u32>) -> Result<()> {
+/// Starts a workspace from the CAs on the connected YubiKeys, or adds the
+/// issuing CA to one that has none.
+///
+/// It needs no PIN and no touch, so it is not for putting one issuing CA
+/// in place of another: that happens only where `replace_issuing` says so,
+/// which a person at a terminal does and the MCP server never does.
+fn adopt(
+    dir: &Path,
+    root_device: Option<u32>,
+    issuing_device: Option<u32>,
+    replace_issuing: bool,
+) -> Result<()> {
     let found = device::list_devices()?;
 
     let mut store = if Store::exists(dir) {
@@ -1050,12 +1067,25 @@ fn adopt(dir: &Path, root_device: Option<u32>, issuing_device: Option<u32>) -> R
                 .ca
                 .as_ref()
                 .expect("select_ca returns a key with a CA");
-            let known = store
-                .ca(CaRole::Issuing)
-                .is_some_and(|entry| entry.yubikey == device.serial)
+            let current = store.ca(CaRole::Issuing).cloned();
+            let same = current.is_some()
                 && store.ca_certificate_der(CaRole::Issuing)? == ca.certificate_der;
+            let known = same
+                && current
+                    .as_ref()
+                    .is_some_and(|entry| entry.yubikey == device.serial);
             if known {
                 say!("  issuing CA:  \"{}\" is already in the folder", ca.subject);
+            } else if let Some(current) = current.filter(|_| !same && !replace_issuing) {
+                bail!(
+                    "this workspace has an issuing CA, \"{}\" on YubiKey {}, and YubiKey {} \
+                     holds another one. `yca adopt` adds an issuing CA where there is none. To \
+                     put the connected one in its place, say --replace-issuing: the old one is \
+                     kept as replaced, and its certificates stay valid until it is revoked",
+                    current.subject,
+                    current.yubikey,
+                    device.serial
+                );
             } else {
                 store.set_issuing(&ca.certificate_der, device.serial)?;
                 say!(

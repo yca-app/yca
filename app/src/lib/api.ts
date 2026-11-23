@@ -612,8 +612,8 @@ export const api = {
   adoptPki: (path: string): Promise<Pki> =>
     inApp ? invoke("adopt_pki", { path }) : sample.adopt(path),
   /** Adds the issuing CA from a connected YubiKey to an open PKI. */
-  adoptIssuing: (path: string): Promise<Pki> =>
-    inApp ? invoke("adopt_issuing", { path }) : sample.adoptIssuing(path),
+  adoptIssuing: (path: string, serial: number): Promise<Pki> =>
+    inApp ? invoke("adopt_issuing", { path, serial }) : sample.adoptIssuing(path),
   /**
    * Lets the user say where a new PKI folder should go, suggesting
    * Documents and `name`; resolves to `null` if they cancel.

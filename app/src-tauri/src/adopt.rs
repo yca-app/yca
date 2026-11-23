@@ -33,15 +33,38 @@ pub fn adopt_pki(lock: tauri::State<'_, KeyLock>, path: String) -> Result<PkiVie
     pki_view(&store)
 }
 
-/// Adds the issuing CA from a connected YubiKey to an existing folder.
+/// Adds the issuing CA on the YubiKey with this serial number to a
+/// workspace that has none. The window names the YubiKey it offered, so
+/// what is taken is what the person saw, not whichever key happens to be
+/// connected by now.
 #[tauri::command(async)]
-pub fn adopt_issuing(lock: tauri::State<'_, KeyLock>, path: String) -> Result<PkiView, String> {
+pub fn adopt_issuing(
+    lock: tauri::State<'_, KeyLock>,
+    path: String,
+    serial: u32,
+) -> Result<PkiView, String> {
     let _keys = lock.wait();
     let mut store = Store::open(&path).map_err(|e| e.to_string())?;
-    let found = device::list_devices().map_err(|e| e.to_string())?;
-    if !add_connected_issuing(&mut store, &found) {
-        return Err("no connected YubiKey holds an issuing CA signed by this root CA".to_owned());
+    if store.ca(CaRole::Issuing).is_some() {
+        return Err(
+            "this workspace has an issuing CA by now: another program gave it one. Look at \
+             the workspace again"
+                .to_owned(),
+        );
     }
+    let found = device::list_devices().map_err(|e| e.to_string())?;
+    let device = found
+        .select_ca(CaRole::Issuing, Some(serial))
+        .map_err(|e| e.to_string())?;
+    let ca = device
+        .ca
+        .as_ref()
+        .expect("select_ca returns a key with a CA");
+    // The store itself checks the signature against its root.
+    store
+        .set_issuing(&ca.certificate_der, device.serial)
+        .map_err(|e| e.to_string())?;
+    keep_attestation(&store, CaRole::Issuing, device.serial);
     pki_view(&store)
 }
 

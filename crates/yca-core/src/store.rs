@@ -582,10 +582,31 @@ impl Store {
 
     /// Adds or replaces the issuing CA. Its certificate must be signed by
     /// this PKI's root.
+    ///
+    /// An issuing CA that this workspace replaced is not put back. If the
+    /// root revoked it, devices refuse what it signs. If not, it would be
+    /// current and replaced at once, and its certificates could then be
+    /// neither told from the old ones nor revoked.
     pub fn set_issuing(&mut self, certificate_der: &[u8], yubikey: u32) -> Result<(), Error> {
         let _held = self.hold()?;
         let issuing = parse(certificate_der)?;
         require_ca(&issuing)?;
+        let serial = serial_number(&issuing);
+        if let Some(before) = self.meta.retired.iter().find(|ca| ca.serial == serial) {
+            return Err(Error::Store(
+                match before.revoked_at {
+                    Some(_) => {
+                        "this issuing CA was revoked by the root CA of this workspace and \
+                         cannot be put back"
+                    }
+                    None => {
+                        "this issuing CA was replaced in this workspace before, and a CA that \
+                         was replaced is not put back"
+                    }
+                }
+                .to_owned(),
+            ));
+        }
         let root_der = self.ca_certificate_der(CaRole::Root)?;
         let root = parse(&root_der)?;
         if issuing.subject().as_raw() == issuing.issuer().as_raw()
@@ -634,8 +655,22 @@ impl Store {
             }
         }
 
+        // The same certificate again, as when it is found on another
+        // YubiKey, goes on counting its revocation lists where it was.
+        let lists_so_far = self
+            .meta
+            .issuing
+            .as_ref()
+            .filter(|_| {
+                self.ca_certificate_der(CaRole::Issuing)
+                    .is_ok_and(|current| current == certificate_der)
+            })
+            .map_or(0, |current| current.crl_number);
         self.write(&ca_file(CaRole::Issuing), &encode_pem(certificate_der))?;
-        self.meta.issuing = Some(ca_entry(&issuing, yubikey));
+        self.meta.issuing = Some(CaEntry {
+            crl_number: lists_so_far,
+            ..ca_entry(&issuing, yubikey)
+        });
         self.write_toml(META_FILE, &self.meta)
     }
 

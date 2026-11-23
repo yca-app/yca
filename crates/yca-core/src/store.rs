@@ -820,9 +820,75 @@ impl Store {
         read_pem(&self.register_copy(&record.serial))
     }
 
+    /// The certificate a renewal issues again, out of the register's own
+    /// copy and made sure of: it carries the entry's serial number, and it
+    /// was signed by `signer`, the CA that is about to sign its successor,
+    /// or by an issuing CA which that one replaced.
+    ///
+    /// A renewal certifies the public key in this file once more, so the
+    /// file decides whose key gets a certificate. It is a plain file like
+    /// everything else in the folder. `signer` is the CA certificate as
+    /// its YubiKey holds it, so a file that was put in the copy's place is
+    /// refused here, whatever else in the folder was changed to go with
+    /// it.
+    pub fn certificate_to_renew(
+        &self,
+        record: &Record,
+        signer_der: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let another = || {
+            Error::Store(format!(
+                "the register's copy of certificate {} is not the certificate this workspace \
+                 issued. Something other than yca changed this folder",
+                record.serial
+            ))
+        };
+        let der = self.certificate_der(record)?;
+        let certificate = parse(&der).map_err(|_| another())?;
+        if serial_number(&certificate) != record.serial {
+            return Err(another());
+        }
+        let signer = parse(signer_der)?;
+        if certificate
+            .verify_signature(Some(signer.public_key()))
+            .is_ok()
+        {
+            return Ok(der);
+        }
+        // Signed by an issuing CA that was replaced since. Its certificate
+        // is a file in the folder as well, and counts only if the root
+        // signed it: the root whose signature the signer's own certificate
+        // carries, which no file in the folder can stand in for.
+        let root_der = self.ca_certificate_der(CaRole::Root)?;
+        let root = parse(&root_der)?;
+        if record.issued_by == CaRole::Issuing
+            && signer.verify_signature(Some(root.public_key())).is_ok()
+        {
+            for retired in &self.meta.retired {
+                if let Ok(found) = read_pem(&self.retired_file(retired))
+                    && parse(&found).is_ok_and(|ca| {
+                        ca.verify_signature(Some(root.public_key())).is_ok()
+                            && certificate.verify_signature(Some(ca.public_key())).is_ok()
+                    })
+                {
+                    return Ok(der);
+                }
+            }
+        }
+        Err(another())
+    }
+
     /// Where the register keeps its own copy of a certificate.
     fn register_copy(&self, serial: &str) -> PathBuf {
         self.dir.join(REGISTER_DIR).join(format!("{serial}.pem"))
+    }
+
+    /// Where the certificate of a replaced issuing CA is kept.
+    fn retired_file(&self, ca: &RetiredCa) -> PathBuf {
+        let name = ca.key_id.as_deref().unwrap_or("unidentified");
+        self.dir
+            .join(RETIRED_DIR)
+            .join(format!("issuing-{name}.pem"))
     }
 
     /// The folder of an entry's certificate, whether it is there or not.
@@ -877,12 +943,7 @@ impl Store {
         if record.issued_by == CaRole::Root {
             return Ok(None);
         }
-        let retired_file = |ca: &RetiredCa| {
-            let name = ca.key_id.as_deref().unwrap_or("unidentified");
-            self.dir
-                .join(RETIRED_DIR)
-                .join(format!("issuing-{name}.pem"))
-        };
+        let retired_file = |ca: &RetiredCa| self.retired_file(ca);
         // The one the register names, then the issuing CA of today, then
         // every one that was replaced: the entry of a certificate whose CA
         // has no key identifier does not say which it was.
@@ -1006,8 +1067,15 @@ impl Store {
     ///
     /// A key in the folder that does not belong to the certificate is
     /// refused rather than handed out with a certificate it cannot be used
-    /// with.
+    /// with. So is a certificate that was revoked: whatever it was revoked
+    /// for, its key does not get another one.
     pub fn renewal(&self, old: &Record, opens: Option<&str>) -> Result<Renewal, Error> {
+        if old.revoked_at.is_some() {
+            return Err(Error::Store(format!(
+                "certificate {} is revoked, and a revoked certificate is not issued again",
+                old.serial
+            )));
+        }
         let folder = self.folder_of(old);
         let key = self.key_in(&folder, opens)?;
         if let Some(key) = &key {
@@ -1278,6 +1346,27 @@ impl Store {
         replaces: Option<&str>,
         now: OffsetDateTime,
     ) -> Result<&Record, Error> {
+        self.record_with(folder, issued, request, issued_by, replaces, now, &[])
+    }
+
+    /// The same, and puts the certificate's files into its folder before
+    /// the workspace is let go of. Another program then never finds the
+    /// entry without its files, and cannot move or delete the folder
+    /// between the one and the other.
+    ///
+    /// The entry comes first all the same: a certificate that was signed
+    /// is in the register even if its files could not be written.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_with(
+        &mut self,
+        folder: &CertificateFolder,
+        issued: &IssuedCertificate,
+        request: &LeafRequest,
+        issued_by: CaRole,
+        replaces: Option<&str>,
+        now: OffsetDateTime,
+        files: &[ExportFile],
+    ) -> Result<&Record, Error> {
         let _held = self.hold()?;
         let ca_der = self.ca_certificate_der(issued_by)?;
         let ca = parse(&ca_der)?;
@@ -1314,6 +1403,9 @@ impl Store {
         });
         self.write_toml(INDEX_FILE, &self.index)?;
         folder.recorded.set(true);
+        for file in files {
+            folder.write(file)?;
+        }
         Ok(self
             .index
             .certificates
@@ -1401,6 +1493,37 @@ impl Store {
         self.index.certificates[position].revoked_at = Some(whole_seconds(now));
         self.write_toml(INDEX_FILE, &self.index)?;
         Ok(&self.index.certificates[position])
+    }
+
+    /// Marks the certificate that a new one replaced as revoked, if that
+    /// can still be done, and says whether it was. `serial` is its whole
+    /// serial number.
+    ///
+    /// This is the end of a renewal, when the new certificate is issued and
+    /// its files are written. By then another program may have revoked or
+    /// deleted the old one, it may have expired, or its issuing CA may have
+    /// been replaced, so that no list can name it any more. None of that
+    /// makes the renewal a failure, and so none of it is an error here.
+    pub fn revoke_replaced(&mut self, serial: &str, now: OffsetDateTime) -> Result<bool, Error> {
+        let _held = self.hold()?;
+        let Some(position) = self
+            .index
+            .certificates
+            .iter()
+            .position(|record| record.serial == serial)
+        else {
+            return Ok(false);
+        };
+        let record = &self.index.certificates[position];
+        if record.revoked_at.is_some()
+            || now >= record.not_after
+            || self.retired_issuer(record).is_some()
+        {
+            return Ok(false);
+        }
+        self.index.certificates[position].revoked_at = Some(whole_seconds(now));
+        self.write_toml(INDEX_FILE, &self.index)?;
+        Ok(true)
     }
 
     /// Deletes a certificate from the register, and from the workspace

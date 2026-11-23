@@ -10,12 +10,14 @@ use tauri::{AppHandle, Manager};
 use time::OffsetDateTime;
 use yca_core::device::CaRole;
 use yca_core::{
-    ExportForm, ExportSource, LeafProfile, LeafRequest, P12Encryption, Repack, SigningRequest,
-    Store,
+    ExportForm, ExportSource, LeafProfile, LeafRequest, P12Encryption, Record, Repack,
+    SigningRequest, Store,
 };
 use zeroize::Zeroizing;
 
-use crate::issue::{Failure, FileView, Issued, filled, limited, open_ca, other, sign};
+use crate::issue::{
+    Failure, FileView, Issued, ask_for_touch, filled, limited, locate_ca, open_ca, other, sign,
+};
 use crate::{KeyLock, PkiView, pki_view, timestamp};
 
 /// What the window asks for when a certificate is to be issued again.
@@ -25,7 +27,10 @@ pub struct ReissueRequest {
     pki_path: String,
     /// Serial number of the certificate to replace.
     serial: String,
-    /// The new names; empty keeps the names as they are.
+    /// The certificate as the window showed it.
+    shown: Shown,
+    /// The names the new certificate gets: for a renewal, the names the
+    /// old one has.
     names: Vec<String>,
     /// Mark the replaced certificate as revoked.
     revoke_old: bool,
@@ -37,7 +42,34 @@ pub struct ReissueRequest {
     /// same password.
     #[serde(default)]
     opens: Option<String>,
+    /// The SHA-256 fingerprint of the CA certificate the window showed as
+    /// the one that signs. Nothing is signed if the workspace names
+    /// another CA by now.
+    ca: String,
     pin: String,
+}
+
+/// What the window showed of the certificate that is issued again. The
+/// register is a file that other programs write to as well, and the one
+/// who types the PIN agreed to what they were shown, not to what the
+/// register says by the time the PIN arrives.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Shown {
+    names: Vec<String>,
+    profile: LeafProfile,
+    issued_by: CaRole,
+}
+
+impl Shown {
+    /// Whether the register still says of the certificate with this very
+    /// serial number what the window showed of it.
+    fn still_holds(&self, serial: &str, record: &Record) -> bool {
+        record.serial == serial
+            && record.names == self.names
+            && record.profile == self.profile
+            && record.issued_by == self.issued_by
+    }
 }
 
 /// Issues a new certificate for the key of an existing one, to change its
@@ -62,42 +94,50 @@ fn reissue(app: &AppHandle, request: ReissueRequest) -> Result<Issued, Failure> 
 
     let mut store = Store::open(&request.pki_path)?;
     let old = store.find(&request.serial)?.clone();
-    let previous = store.certificate_der(&old)?;
-    let names = if request.names.is_empty() {
-        old.names.clone()
-    } else {
-        request.names
-    };
-    let leaf_request = limited(LeafRequest::for_profile(old.profile, &names)?, request.days)?;
-    // The key, and the password of its file, before the YubiKey signs.
+    if !request.shown.still_holds(&request.serial, &old) {
+        return Err(other(
+            "the register no longer says of this certificate what was shown here: another \
+             program changed the workspace. Close this and look at the certificate again",
+        ));
+    }
+    let leaf_request = limited(
+        LeafRequest::for_profile(old.profile, &request.names)?,
+        request.days,
+    )?;
+    // The CA that signed the old certificate signs the new one. Its
+    // YubiKey says, before its PIN is used, whether the register's copy of
+    // the old certificate is that certificate: the key in it is the key
+    // that gets certified again.
+    let key = locate_ca(&store, old.issued_by, &request.ca)?;
+    let previous = store.certificate_to_renew(&old, key.certificate_der())?;
+    // The private key, and the password of its file, before the YubiKey
+    // signs.
     let renewal = store.renewal(&old, opens.as_deref().map(String::as_str))?;
     // The new certificate stays in the group of the one it replaces.
     let folder = store.new_certificate_folder(&leaf_request.names()[0], old.group.as_deref())?;
 
-    // The CA that signed the old certificate signs the new one.
-    let authority = open_ca(app, &store, old.issued_by, pin)?;
+    let serial = key.serial();
+    let authority = key.open(pin)?;
+    ask_for_touch(app, &authority, serial);
     let now = OffsetDateTime::now_utc();
     let issued = sign(&authority, |ca| ca.reissue(&leaf_request, &previous, now))?;
-    store.record_in(
+    // The files come in the form the old ones are in, with the same key.
+    let files = renewal.files(&issued, &leaf_request.names()[0])?;
+    store.record_with(
         &folder,
         &issued,
         &leaf_request,
         old.issued_by,
         Some(&old.serial),
         now,
+        &files,
     )?;
-    // A certificate that has expired is no longer anyone's to revoke, and
-    // one of a replaced issuing CA cannot be revoked on its own.
-    if request.revoke_old
-        && old.revoked_at.is_none()
-        && now < old.not_after
-        && store.retired_issuer(&old).is_none()
-    {
-        store.revoke(&old.serial, now)?;
+    // Last, when the new certificate is there in full. A certificate that
+    // can no longer be revoked, or that another program has revoked or
+    // deleted in the meantime, is left as it is.
+    if request.revoke_old {
+        store.revoke_replaced(&old.serial, now)?;
     }
-
-    // The files come in the form the old ones are in, with the same key.
-    let files = renewal.files(&issued, &leaf_request.names()[0])?;
     filled(&folder, &issued, files)
 }
 
@@ -143,6 +183,10 @@ pub struct SignRequest {
     /// The group to sort the certificate into, if any.
     #[serde(default)]
     group: Option<String>,
+    /// The SHA-256 fingerprint of the CA certificate the window showed as
+    /// the one that signs. Nothing is signed if the workspace names
+    /// another CA by now.
+    ca: String,
     pin: String,
 }
 
@@ -184,12 +228,11 @@ fn sign_csr(app: &AppHandle, request: SignRequest) -> Result<Issued, Failure> {
     let folder =
         store.new_certificate_folder(&leaf_request.names()[0], request.group.as_deref())?;
 
-    let authority = open_ca(app, &store, role, pin)?;
+    let authority = open_ca(app, &store, role, &request.ca, pin)?;
     let now = OffsetDateTime::now_utc();
     let issued = sign(&authority, |ca| {
         ca.sign_request(&leaf_request, &signing_request, now)
     })?;
-    store.record_in(&folder, &issued, &leaf_request, role, None, now)?;
 
     // No private key: the device made it and keeps it.
     let files = yca_core::export(
@@ -200,6 +243,7 @@ fn sign_csr(app: &AppHandle, request: SignRequest) -> Result<Issued, Failure> {
         },
         None,
     )?;
+    store.record_with(&folder, &issued, &leaf_request, role, None, now, &files)?;
     filled(&folder, &issued, files)
 }
 
@@ -336,6 +380,10 @@ pub struct ListRequest {
     pki_path: String,
     /// Whose list: each CA lists the certificates it issued itself.
     role: CaRole,
+    /// The SHA-256 fingerprint of the CA certificate the window showed as
+    /// the one that signs. Nothing is signed if the workspace names
+    /// another CA by now.
+    ca: String,
     pin: String,
 }
 
@@ -375,7 +423,7 @@ fn sign_list(app: &AppHandle, request: ListRequest) -> Result<ListSigned, Failur
     let revoked = store.revoked(role, now);
     let number = store.next_crl_number(role)?;
 
-    let authority = open_ca(app, &store, role, pin)?;
+    let authority = open_ca(app, &store, role, &request.ca, pin)?;
     let list = sign(&authority, |ca| ca.revocation_list(&revoked, number, now))?;
     // The workspace keeps the current list of each CA, in both forms.
     let (folder, [pem, der]) = store.save_crl(role, &list)?;
@@ -405,6 +453,41 @@ mod tests {
         fs::write(&path, "not a certificate request").unwrap();
         assert!(read_request(path.to_string_lossy().into_owned()).is_err());
         assert!(read_request("/nowhere/at/all.csr".to_owned()).is_err());
+    }
+
+    #[test]
+    fn a_certificate_the_register_changed_is_not_the_one_that_was_shown() {
+        let at = OffsetDateTime::now_utc();
+        let root =
+            yca_core::Authority::create_root("Test Root CA", crate::fixtures::key(), at).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut store =
+            Store::create(dir.path().join("pki"), root.certificate_der(), 1001).unwrap();
+        let request = LeafRequest::tls_server(["nas.home.example"]).unwrap();
+        let issued = root.issue(&request, &crate::fixtures::key(), at).unwrap();
+        let record = store
+            .record(&issued, &request, CaRole::Root, None, at)
+            .unwrap()
+            .clone();
+        let shown = |name: &str, profile, issued_by| Shown {
+            names: vec![name.to_owned()],
+            profile,
+            issued_by,
+        };
+        let as_issued = shown("nas.home.example", LeafProfile::TlsServer, CaRole::Root);
+        assert!(as_issued.still_holds(&record.serial, &record));
+        // Only the certificate with the whole serial number is the one.
+        assert!(!as_issued.still_holds(&record.serial[..8], &record));
+
+        // The register says other names, another purpose or another CA than
+        // the window showed: what was agreed to is not what would be signed.
+        for changed in [
+            shown("admin.home.example", LeafProfile::TlsServer, CaRole::Root),
+            shown("nas.home.example", LeafProfile::TlsClient, CaRole::Root),
+            shown("nas.home.example", LeafProfile::TlsServer, CaRole::Issuing),
+        ] {
+            assert!(!changed.still_holds(&record.serial, &record));
+        }
     }
 
     #[test]

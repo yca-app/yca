@@ -45,6 +45,10 @@ pub struct IssueRequest {
     /// The group to sort the certificate into, if any.
     #[serde(default)]
     group: Option<String>,
+    /// The SHA-256 fingerprint of the CA certificate the window showed as
+    /// the one that signs. Nothing is signed if the workspace names
+    /// another CA by now.
+    ca: String,
     pin: String,
 }
 
@@ -220,7 +224,7 @@ fn issue(app: &AppHandle, request: IssueRequest) -> Result<Issued, Failure> {
     };
     let folder = store.new_certificate_folder(&first_name, request.group.as_deref())?;
 
-    let authority = open_ca(app, &store, role, pin)?;
+    let authority = open_ca(app, &store, role, &request.ca, pin)?;
     let key = match request.key {
         KeyKind::Rsa => KeyPair::generate_rsa_for(&PKCS_RSA_SHA256, RsaKeySize::_2048),
         KeyKind::Ecdsa => KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256),
@@ -228,7 +232,6 @@ fn issue(app: &AppHandle, request: IssueRequest) -> Result<Issued, Failure> {
     .map_err(other)?;
     let now = OffsetDateTime::now_utc();
     let issued = sign(&authority, |ca| ca.issue(&leaf_request, &key, now))?;
-    store.record_in(&folder, &issued, &leaf_request, role, None, now)?;
 
     let key_der = Zeroizing::new(key.serialize_der());
     let files = yca_core::export(
@@ -246,19 +249,18 @@ fn issue(app: &AppHandle, request: IssueRequest) -> Result<Issued, Failure> {
             label: &first_name,
         }),
     )?;
+    store.record_with(&folder, &issued, &leaf_request, role, None, now, &files)?;
     filled(&folder, &issued, files)
 }
 
-/// Puts the files for the device into the certificate's folder and tells
-/// the window what is there now: those files and nothing else.
+/// Tells the window what is in a certificate's folder now that it is
+/// entered in the register and its files are written: those files and
+/// nothing else.
 pub(crate) fn filled(
     folder: &CertificateFolder,
     issued: &IssuedCertificate,
     files: Vec<ExportFile>,
 ) -> Result<Issued, Failure> {
-    for file in &files {
-        folder.write(file)?;
-    }
     let views = files.into_iter().map(FileView::of).collect();
     Ok(Issued {
         serial: issued.serial()?,
@@ -271,28 +273,79 @@ pub(crate) fn filled(
 /// Opens the CA of `role` on its YubiKey with the PIN, after making sure
 /// that the key is the one this workspace knows and that a wrong PIN would
 /// not lock it. Tells the window when the key is about to wait for a touch.
+///
+/// `shown` is the fingerprint of the CA certificate the window showed as
+/// the one that signs.
 pub(crate) fn open_ca(
     app: &AppHandle,
     store: &Store,
     role: CaRole,
+    shown: &str,
     pin: Zeroizing<String>,
 ) -> Result<Authority<YubiKeySigner>, Failure> {
-    let (authority, serial) = open_ca_quietly(store, role, pin)?;
-    if authority.key().touch_required() {
-        // The window shows "touch your YubiKey" on this.
-        let _ = app.emit(TOUCH_EVENT, serial);
-    }
+    let key = locate_ca(store, role, shown)?;
+    let serial = key.serial();
+    let authority = key.open(pin)?;
+    ask_for_touch(app, &authority, serial);
     Ok(authority)
 }
 
-/// The same without a word to the window, for a CA that signs only after
-/// something else is done first: the touch is then asked for when its turn
-/// comes. Returns the serial number of its YubiKey as well.
-pub(crate) fn open_ca_quietly(
-    store: &Store,
-    role: CaRole,
-    pin: Zeroizing<String>,
-) -> Result<(Authority<YubiKeySigner>, u32), Failure> {
+/// Has the window say "touch your YubiKey", naming the YubiKey by its
+/// serial number, for a CA whose key waits for a touch before it signs.
+pub(crate) fn ask_for_touch(app: &AppHandle, authority: &Authority<YubiKeySigner>, serial: u32) {
+    if authority.key().touch_required() {
+        let _ = app.emit(TOUCH_EVENT, serial);
+    }
+}
+
+/// The YubiKey with a CA of this workspace, found and looked over, with
+/// nothing asked of it yet.
+pub(crate) struct Located {
+    serial: u32,
+    certificate_der: Vec<u8>,
+}
+
+impl Located {
+    /// The serial number of the YubiKey.
+    pub(crate) fn serial(&self) -> u32 {
+        self.serial
+    }
+
+    /// The CA certificate as the YubiKey holds it.
+    pub(crate) fn certificate_der(&self) -> &[u8] {
+        &self.certificate_der
+    }
+
+    /// Opens the CA with the PIN. What comes back is the CA that was
+    /// looked over: a YubiKey that was exchanged for another since is
+    /// refused.
+    pub(crate) fn open(self, pin: Zeroizing<String>) -> Result<Authority<YubiKeySigner>, Failure> {
+        let authority = Authority::open_on_yubikey(self.serial, &pin)?;
+        if authority.certificate_der() != self.certificate_der {
+            return Err(other(format!(
+                "YubiKey {} holds a different CA than a moment ago",
+                self.serial
+            )));
+        }
+        Ok(authority)
+    }
+}
+
+/// Finds the YubiKey with the CA of `role` and makes sure of it before
+/// its PIN is used: that the workspace still names the CA the window
+/// showed, that the key is the one the workspace knows and holds that
+/// very certificate, and that a wrong PIN would not lock it.
+///
+/// Another program may have given the workspace a different CA since the
+/// window drew what the person is looking at. `shown` is the fingerprint
+/// of the CA certificate it drew.
+pub(crate) fn locate_ca(store: &Store, role: CaRole, shown: &str) -> Result<Located, Failure> {
+    if store.ca_fingerprints(role)?.sha256 != shown {
+        return Err(other(format!(
+            "the {role} of this workspace is not the one that was shown: another program \
+             changed the workspace. Close this and look at it again"
+        )));
+    }
     let expected = store
         .ca(role)
         .ok_or_else(|| other(format!("this workspace has no {role} yet")))?
@@ -328,8 +381,10 @@ pub(crate) fn open_ca_quietly(
         _ => {}
     }
 
-    let authority = Authority::open_on_yubikey(device.serial, &pin)?;
-    Ok((authority, device.serial))
+    Ok(Located {
+        serial: device.serial,
+        certificate_der: on_key.certificate_der.clone(),
+    })
 }
 
 /// Has the YubiKey sign something and reports what the key itself said
@@ -356,6 +411,7 @@ mod tests {
             "files": "p12",
             "p12Password": "secret",
             "signWithRoot": false,
+            "ca": "AB CD",
             "pin": "123456",
         });
         for (name, value) in extra.as_object().unwrap() {

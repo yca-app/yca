@@ -1797,36 +1797,38 @@ fn an_entry_that_does_not_name_its_signer_still_finds_the_ca_that_signed_it() {
     );
 }
 
-/// Renews a certificate the way the window and the command do: what the
-/// files are written from is read first, then the CA signs, then the new
-/// certificate gets a folder of its own.
+/// Renews a certificate the way the window and the command do: the CA
+/// that signs says whether the register's copy is the certificate, what
+/// the files are written from is read, then the CA signs, and the new
+/// certificate is entered together with its files.
 fn renew(pki: &mut Pki, serial: &str, opens: Option<&str>) -> Result<String, Error> {
     let at = now();
     let old = pki.store.find(serial).unwrap().clone();
+    let previous = pki
+        .store
+        .certificate_to_renew(&old, pki.issuing.certificate_der())?;
     let renewal = pki.store.renewal(&old, opens)?;
     let request = LeafRequest::tls_server(old.names.clone()).unwrap();
-    let previous = pki.store.certificate_der(&old).unwrap();
     let issued = pki.issuing.reissue(&request, &previous, at).unwrap();
     let folder = pki
         .store
         .new_certificate_folder(&old.names[0], old.group.as_deref())
         .unwrap();
+    let files = renewal.files(&issued, &old.names[0]).unwrap();
     let serial = pki
         .store
-        .record_in(
+        .record_with(
             &folder,
             &issued,
             &request,
             CaRole::Issuing,
             Some(serial),
             at,
+            &files,
         )
         .unwrap()
         .serial
         .clone();
-    for file in renewal.files(&issued, &old.names[0]).unwrap() {
-        folder.write(&file).unwrap();
-    }
     Ok(serial)
 }
 
@@ -1981,4 +1983,146 @@ fn a_renewed_certificate_of_a_device_that_keeps_its_key_has_none() {
     );
     renew(&mut pki, &old, None).unwrap();
     assert_eq!(files_of(&pki, "switch.home.example 2"), ["fullchain.crt"]);
+}
+
+/// What someone who can write into the folder would put in place of a
+/// certificate to get a key of their own certified: a certificate with
+/// that serial number, for their key, signed by a CA they made for it.
+/// Returns it and the certificate of that CA, both in PEM form.
+fn forged(serial: &str, name: &str) -> (String, String) {
+    let serial: Vec<u8> = (0..serial.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&serial[at..at + 2], 16).unwrap())
+        .collect();
+    let mut theirs = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    theirs.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    theirs
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "Test Issuing CA");
+    let their_key = key();
+    let their_ca = theirs.self_signed(&their_key).unwrap();
+    let issuer = rcgen::Issuer::new(theirs, their_key);
+
+    let mut leaf = rcgen::CertificateParams::new(vec![name.to_owned()]).unwrap();
+    leaf.serial_number = Some(rcgen::SerialNumber::from_slice(&serial));
+    let certificate = leaf.signed_by(&key(), &issuer).unwrap();
+    let pem = |der: &[u8]| pem::encode(&pem::Pem::new("CERTIFICATE", der));
+    (pem(certificate.der()), pem(their_ca.der()))
+}
+
+#[test]
+fn a_register_copy_that_was_exchanged_is_not_renewed() {
+    let mut pki = pki();
+    let nas = issue_into(&mut pki, "nas.home.example", None);
+    let printer = issue_into(&mut pki, "printer.home.example", None);
+    let record = pki.store.find(&nas).unwrap().clone();
+    let copy = pki.store.dir().join(format!("register/{nas}.pem"));
+    let genuine = fs::read_to_string(&copy).unwrap();
+
+    // As issued, it is the certificate, and the CA that signed it says so.
+    let der = pki
+        .store
+        .certificate_to_renew(&record, pki.issuing.certificate_der())
+        .unwrap();
+    assert_eq!(der, pki.store.certificate_der(&record).unwrap());
+    // The root did not sign it, and is not taken for the CA that did.
+    assert!(matches!(
+        pki.store
+            .certificate_to_renew(&record, pki.root.certificate_der()),
+        Err(Error::Store(_))
+    ));
+
+    // A certificate with the same serial number for somebody else's key.
+    let (theirs, _) = forged(&nas, "nas.home.example");
+    fs::write(&copy, theirs).unwrap();
+    assert!(matches!(renew(&mut pki, &nas, None), Err(Error::Store(_))));
+
+    // Another certificate of this very CA, under the wrong serial number.
+    fs::copy(
+        pki.store.dir().join(format!("register/{printer}.pem")),
+        &copy,
+    )
+    .unwrap();
+    assert!(matches!(renew(&mut pki, &nas, None), Err(Error::Store(_))));
+
+    // Nothing was issued for either, and the real one renews as before.
+    assert_eq!(pki.store.records().len(), 2);
+    fs::write(&copy, genuine).unwrap();
+    renew(&mut pki, &nas, None).unwrap();
+    assert_eq!(pki.store.records().len(), 3);
+}
+
+#[test]
+fn a_certificate_of_a_replaced_issuing_ca_is_renewed_only_if_the_root_signed_that_ca() {
+    let mut pki = pki();
+    let nas = issue_into(&mut pki, "nas.home.example", None);
+    let record = pki.store.find(&nas).unwrap().clone();
+    let second = pki
+        .root
+        .create_issuing("Second Issuing CA", key(), now())
+        .unwrap();
+    pki.store
+        .set_issuing(second.certificate_der(), ISSUING_KEY + 1)
+        .unwrap();
+
+    // The new issuing CA did not sign it, but the root that signed the new
+    // one also signed the CA that did.
+    pki.store
+        .certificate_to_renew(&record, second.certificate_der())
+        .unwrap();
+
+    // The file of the replaced CA exchanged for a CA the root never signed,
+    // and the copy for a certificate of that one.
+    let retired = pki.store.dir().join("retired");
+    let kept = fs::read_dir(&retired)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ending| ending == "pem"))
+        .unwrap();
+    let (theirs, their_ca) = forged(&nas, "nas.home.example");
+    fs::write(&kept, their_ca).unwrap();
+    fs::write(pki.store.dir().join(format!("register/{nas}.pem")), theirs).unwrap();
+    assert!(matches!(
+        pki.store
+            .certificate_to_renew(&record, second.certificate_der()),
+        Err(Error::Store(_))
+    ));
+}
+
+#[test]
+fn a_revoked_certificate_is_not_renewed() {
+    let mut pki = pki();
+    let (nas, _) = issue_with_files(
+        &mut pki,
+        "nas.home.example",
+        CaRole::Issuing,
+        ExportForm::Fullchain,
+        true,
+    );
+    pki.store.revoke(&nas, now()).unwrap();
+    assert!(matches!(renew(&mut pki, &nas, None), Err(Error::Store(_))));
+    assert_eq!(pki.store.records().len(), 1);
+}
+
+#[test]
+fn the_certificate_a_renewal_replaced_is_revoked_if_it_still_can_be() {
+    let mut pki = pki();
+    let (nas, _) = issue_with_files(
+        &mut pki,
+        "nas.home.example",
+        CaRole::Issuing,
+        ExportForm::Fullchain,
+        true,
+    );
+    let renewed = renew(&mut pki, &nas, None).unwrap();
+
+    assert!(pki.store.revoke_replaced(&nas, now()).unwrap());
+    assert!(pki.store.find(&nas).unwrap().revoked_at.is_some());
+    assert!(pki.store.find(&renewed).unwrap().revoked_at.is_none());
+    // Revoked already, by this or by another program: nothing to do, and
+    // nothing to complain of.
+    assert!(!pki.store.revoke_replaced(&nas, now()).unwrap());
+    // The same for one that was deleted in the meantime.
+    pki.store.delete(&nas, now()).unwrap();
+    assert!(!pki.store.revoke_replaced(&nas, now()).unwrap());
 }

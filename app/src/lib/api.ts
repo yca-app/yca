@@ -168,6 +168,10 @@ export interface IssueRequest {
   p12Compatible: boolean;
   /** The group to sort the certificate into; `null` for none. */
   group: string | null;
+  /** The SHA-256 fingerprint of the CA certificate the dialog showed as the
+   *  one that signs. Nothing is signed if the workspace names another CA by
+   *  the time the PIN arrives. */
+  ca: string;
   pin: string;
 }
 
@@ -237,6 +241,10 @@ export interface SignRequest {
   days: number | null;
   /** The group to sort the certificate into; `null` for none. */
   group: string | null;
+  /** The SHA-256 fingerprint of the CA certificate the dialog showed as the
+   *  one that signs. Nothing is signed if the workspace names another CA by
+   *  the time the PIN arrives. */
+  ca: string;
   pin: string;
 }
 
@@ -266,7 +274,11 @@ export interface ReissueRequest {
   pkiPath: string;
   /** Serial number of the certificate to replace. */
   serial: string;
-  /** The new names; empty keeps them as they are. */
+  /** The certificate as the dialog showed it. Nothing is signed if the
+   *  register says something else of it by the time the PIN arrives. */
+  shown: { names: string[]; profile: Profile; issuedBy: CaRole };
+  /** The names the new certificate gets: for a renewal, the names the old
+   *  one has. */
   names: string[];
   /** Mark the replaced certificate as revoked. */
   revokeOld: boolean;
@@ -275,6 +287,10 @@ export interface ReissueRequest {
   /** The password of the `.p12` file the old certificate is in, where it
    *  is in one; the new file gets the same password. */
   opens: string | null;
+  /** The SHA-256 fingerprint of the CA certificate the dialog showed as the
+   *  one that signs. Nothing is signed if the workspace names another CA by
+   *  the time the PIN arrives. */
+  ca: string;
   pin: string;
 }
 
@@ -282,6 +298,10 @@ export interface ListRequest {
   pkiPath: string;
   /** Whose list: each CA lists the certificates it issued itself. */
   role: CaRole;
+  /** The SHA-256 fingerprint of the CA certificate the dialog showed as the
+   *  one that signs. Nothing is signed if the workspace names another CA by
+   *  the time the PIN arrives. */
+  ca: string;
   pin: string;
 }
 
@@ -1050,7 +1070,7 @@ const sample = {
       throw { kind: "wrong-password" } satisfies Failure;
     }
     await pretendKey(request.pin, onTouch);
-    const names = request.names.length > 0 ? request.names : old.names;
+    const names = request.names;
     const expiresIn = sampleValidity(old.profile, request.days);
     const serial = Math.random().toString(16).slice(2, 10);
     register().unshift(

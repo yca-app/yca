@@ -25,7 +25,7 @@ use yca_core::{
 use zeroize::Zeroizing;
 
 use crate::adopt::keep_attestation;
-use crate::issue::{Failure, TOUCH_EVENT, open_ca_quietly, other};
+use crate::issue::{Failure, TOUCH_EVENT, locate_ca, other};
 use crate::{KeyLock, PkiView, pki_view, timestamp};
 
 /// One YubiKey and the CA it is to get.
@@ -282,7 +282,9 @@ fn added_issuing(app: &AppHandle, request: IssuingAddition) -> Result<PkiView, F
     // Two PINs are asked for here, so a refused one names its YubiKey.
     // Opened without a word to the window: the root signs last, once the
     // new key is made, and only then wants its touch.
-    let (root, _) = open_ca_quietly(&store, CaRole::Root, Zeroizing::new(request.root_pin))
+    let shown = store.ca_fingerprints(CaRole::Root)?.sha256;
+    let root = locate_ca(&store, CaRole::Root, &shown)
+        .and_then(|key| key.open(Zeroizing::new(request.root_pin)))
         .map_err(|failure| failure.on_key(root_serial))?;
 
     let issuing = make_issuing(app, &root, root_serial, &request.key)

@@ -294,6 +294,9 @@ export function SigningDialog({
   const attemptsLeft = (devices?.usable ?? []).find(
     (device) => device.serial === signer?.yubikey,
   )?.pinAttemptsLeft;
+  // The CA this dialog shows as the one that signs, by its fingerprint.
+  // The app signs with no other, whatever the workspace says by then.
+  const shownCa = signer?.sha256 ?? "";
 
   const nameList = names
     .split(",")
@@ -359,7 +362,7 @@ export function SigningDialog({
     try {
       if (task.kind === "list") {
         const signed = await api.signRevocationList(
-          { pkiPath: pki.path, role: task.role, pin },
+          { pkiPath: pki.path, role: task.role, ca: shownCa, pin },
           touched,
         );
         setOutcome({
@@ -386,11 +389,15 @@ export function SigningDialog({
                 {
                   pkiPath: pki.path,
                   serial: old.serial,
-                  // No names means: keep the ones it has.
-                  names: task.kind === "change" ? nameList : [],
+                  // What this dialog showed of the old certificate, for
+                  // the app to hold against the register before the
+                  // YubiKey signs.
+                  shown: { names: old.names, profile: old.profile, issuedBy: old.issuedBy },
+                  names: finalNames,
                   revokeOld: revokeOld && canRevokeOld,
                   days,
                   opens: needsOpens ? opens : null,
+                  ca: shownCa,
                   pin,
                 },
                 touched,
@@ -407,6 +414,7 @@ export function SigningDialog({
                     signWithRoot: role === "root",
                     days,
                     group,
+                    ca: shownCa,
                     pin,
                   },
                   touched,
@@ -423,6 +431,7 @@ export function SigningDialog({
                     key: keyKind,
                     p12Compatible: files === "p12" && p12Compatible,
                     group,
+                    ca: shownCa,
                     pin,
                   },
                   touched,
@@ -481,6 +490,8 @@ export function SigningDialog({
           : task.kind === "change"
             ? t.changeNamesTitle[isServer(profile) ? "server" : "client"]
             : t.listTitle;
+  // What the dialog is about: the certificate that is issued again, as it
+  // is now, while its new names are still being typed.
   const subject =
     task.kind === "list"
       ? signer
@@ -489,6 +500,11 @@ export function SigningDialog({
       : old !== null
         ? `${t.profile[profile]} · ${old.names.join(", ")}`
         : `${t.profile[profile]} · ${nameList.join(", ")}`;
+  // What gets signed, said above the PIN and while the YubiKey signs: the
+  // names that end up in the certificate, which for a change of names are
+  // not the ones it has now.
+  const underPin =
+    task.kind === "list" ? subject : `${t.profile[profile]} · ${finalNames.join(", ")}`;
 
   // While the YubiKey is signing the dialog cannot be dismissed.
   const busy = step === "signing";
@@ -515,7 +531,7 @@ export function SigningDialog({
             <DialogDescription>
               {step === "kind" && t.stepKind}
               {step === "details" && (old !== null ? subject : t.profileTitle[profile])}
-              {(step === "pin" || step === "signing") && subject}
+              {(step === "pin" || step === "signing") && underPin}
               {step === "done" && outcome?.summary}
             </DialogDescription>
             {/* Which group a new certificate goes into. Beside the line that

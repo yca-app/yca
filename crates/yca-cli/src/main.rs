@@ -917,19 +917,19 @@ fn issue(
     let key = algorithm.generate()?;
     let now = OffsetDateTime::now_utc();
     let issued = sign(&authority, |ca| ca.issue(&request, &key, now))?;
-    if let (Some(store), Some(folder)) = (&mut store, &folder) {
-        store.record_in(folder, &issued, &request, role, None, now)?;
-    }
-    answer_with_certificate(&issued, names, folder.as_ref().map(|folder| folder.path()))?;
-
-    write_bundle(
+    let files = bundle(
         export_args,
-        &target(folder.as_ref(), export_args.out.as_deref()),
         &issued,
         &key,
         &names[0],
         password.as_ref().map(|password| password.as_str()),
     )?;
+    if let (Some(store), Some(folder)) = (&mut store, &folder) {
+        store.record_with(folder, &issued, &request, role, None, now, &files)?;
+    }
+    answer_with_certificate(&issued, names, folder.as_ref().map(|folder| folder.path()))?;
+
+    target(folder.as_ref(), export_args.out.as_deref()).write_all(&files)?;
     say!();
     say!("Certificate for {}", names.join(", "));
     say!("Valid until {}", issued.not_after().date());
@@ -1187,7 +1187,6 @@ fn reissue(
 ) -> Result<()> {
     let mut store = Store::open(dir)?;
     let old: Record = store.find(serial)?.clone();
-    let previous = store.certificate_der(&old)?;
     let names = if names.is_empty() {
         old.names.clone()
     } else {
@@ -1214,28 +1213,32 @@ fn reissue(
     // The new certificate stays in the group of the one it replaces.
     let folder = store.new_certificate_folder(&names[0], old.group.as_deref())?;
 
-    // The CA that signed the old certificate signs the new one.
+    // The CA that signed the old certificate signs the new one. Its
+    // YubiKey says whether the register's copy of the old certificate is
+    // that certificate: the key in it is the key that gets certified again.
     let authority = open_ca(old.issued_by, device, Some(&store))?;
+    let previous = store.certificate_to_renew(&old, authority.certificate_der())?;
     let now = OffsetDateTime::now_utc();
     let issued = sign(&authority, |ca| ca.reissue(&request, &previous, now))?;
-    store.record_in(
+    // The files come in the form the old ones are in, with the same key:
+    // the folder of the new certificate is complete on its own.
+    let files = renewal.files(&issued, &names[0])?;
+    store.record_with(
         &folder,
         &issued,
         &request,
         old.issued_by,
         Some(&old.serial),
         now,
+        &files,
     )?;
     answer_with_certificate(&issued, &names, Some(folder.path()))?;
-    // A certificate of a replaced issuing CA cannot be revoked on its own.
-    let revoke_old = revoke_old && store.retired_issuer(&old).is_none();
-    if revoke_old {
-        store.revoke(&old.serial, now)?;
-    }
+    // Last, when the new certificate is there in full. A certificate of a
+    // replaced issuing CA cannot be revoked on its own, and one that
+    // another program revoked or deleted in the meantime is left as it is.
+    let revoke_old = revoke_old && store.revoke_replaced(&old.serial, now)?;
 
-    // The files come in the form the old ones are in, with the same key:
-    // the folder of the new certificate is complete on its own.
-    Target::Folder(&folder).write_all(&renewal.files(&issued, &names[0])?)?;
+    Target::Folder(&folder).write_all(&files)?;
     say!();
     say!("The private key did not change; install only the new certificate.");
     say!("Valid until {}", issued.not_after().date());
@@ -1244,7 +1247,7 @@ fn reissue(
             "The old certificate {} is marked as revoked.",
             short(&old.serial)
         );
-    } else if old.revoked_at.is_none() {
+    } else {
         say!(
             "The old certificate {} stays valid until {} unless you revoke it.",
             short(&old.serial),
@@ -1479,19 +1482,20 @@ fn sign_csr(
     let issued = sign(&authority, |ca| {
         ca.sign_request(&request, &signing_request, now)
     })?;
-    if let (Some(store), Some(folder)) = (&mut store, &folder) {
-        store.record_in(folder, &issued, &request, role, None, now)?;
-    }
-    answer_with_certificate(&issued, &names, folder.as_ref().map(|folder| folder.path()))?;
-
-    target(folder.as_ref(), out).write_all(&yca_core::export(
+    let bundle = yca_core::export(
         files.into(),
         ExportSource {
             issued: &issued,
             private_key_der: None,
         },
         None,
-    )?)?;
+    )?;
+    if let (Some(store), Some(folder)) = (&mut store, &folder) {
+        store.record_with(folder, &issued, &request, role, None, now, &bundle)?;
+    }
+    answer_with_certificate(&issued, &names, folder.as_ref().map(|folder| folder.path()))?;
+
+    target(folder.as_ref(), out).write_all(&bundle)?;
     say!();
     say!("The private key never left the device; install the certificate there.");
     say!("Valid until {}", issued.not_after().date());
@@ -2065,14 +2069,13 @@ fn demo(hosts: &[String], export_args: &ExportArgs, algorithm: Algorithm) -> Res
     let server_key = algorithm.generate()?;
     let server = issuing.issue(&LeafRequest::tls_server(hosts)?, &server_key, now)?;
 
-    write_bundle(
+    target(None, export_args.out.as_deref()).write_all(&bundle(
         export_args,
-        &target(None, export_args.out.as_deref()),
         &server,
         &server_key,
         &hosts[0],
         password.as_ref().map(|password| password.as_str()),
-    )?;
+    )?)?;
     say!();
     say!("Certificate for {}", hosts.join(", "));
     say!("Root valid until    {}", root.not_after().date());
@@ -2099,9 +2102,13 @@ impl Target<'_> {
         }
     }
 
+    /// Writes a file where that is still to do: into a directory named on
+    /// the command line. The folder of a certificate in a workspace got
+    /// its files along with the entry in the register, in one hold of the
+    /// workspace.
     fn write(&self, file: &ExportFile) -> Result<()> {
         match self {
-            Target::Folder(folder) => Ok(folder.write(file)?),
+            Target::Folder(_) => Ok(()),
             Target::Directory(out) => {
                 fs::create_dir_all(out)
                     .with_context(|| format!("could not create {}", out.display()))?;
@@ -2116,7 +2123,7 @@ impl Target<'_> {
         }
     }
 
-    /// Writes the files and lists them.
+    /// Writes the files, where that is still to do, and lists them.
     fn write_all(&self, files: &[ExportFile]) -> Result<()> {
         let width = files.iter().map(|file| file.name.len()).max().unwrap_or(0);
         say!();
@@ -2156,16 +2163,16 @@ fn target<'a>(folder: Option<&'a CertificateFolder>, out: Option<&'a Path>) -> T
     }
 }
 
-fn write_bundle(
+/// The files of a new certificate with its key, in the form asked for.
+fn bundle(
     args: &ExportArgs,
-    to: &Target<'_>,
     issued: &IssuedCertificate,
     key: &KeyPair,
     label: &str,
     password: Option<&str>,
-) -> Result<()> {
+) -> Result<Vec<ExportFile>> {
     let key_der = Zeroizing::new(key.serialize_der());
-    let files = yca_core::export(
+    Ok(yca_core::export(
         args.files.into(),
         ExportSource {
             issued,
@@ -2176,9 +2183,7 @@ fn write_bundle(
             encryption: args.p12.into(),
             label,
         }),
-    )?;
-
-    to.write_all(&files)
+    )?)
 }
 
 /// Writes the files of a certificate again in another form.
@@ -2247,6 +2252,9 @@ fn p12_opens() -> Result<Zeroizing<String>> {
 /// terminal, or taken from YCA_P12_PASSWORD for scripts and tests.
 fn p12_password() -> Result<Zeroizing<String>> {
     if let Ok(password) = std::env::var("YCA_P12_PASSWORD") {
+        if password.is_empty() {
+            bail!("the .p12 password must not be empty");
+        }
         return Ok(Zeroizing::new(password));
     }
     let prompt = |text: &str| -> Result<Zeroizing<String>> {

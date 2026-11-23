@@ -16,6 +16,10 @@ What changed in each release, written for the people who use the app. The format
 
 ### Fixed
 
+- **A renewal signs what its dialog shows.** Renewing a certificate, or changing its names, took the names, what the certificate is for and the key from the workspace folder at the moment the YubiKey signed, not from what the dialog had shown. A program that wrote to the folder in between could have had other names or a key of its own certified. The app now signs only what was shown, and has the CA on the YubiKey confirm that the certificate it issues again is one this CA issued. `yca reissue` checks the same.
+- **The last screen before the PIN names what gets signed.** For a change of names it showed the names the certificate had, not the ones it gets.
+- **Nothing is signed with another CA than the one that was shown.** If another program gives the workspace a different CA while a dialog is open, the dialog now says so and asks for no PIN.
+- **A certificate and its files are entered in one step,** so that another program working on the same workspace never finds the one without the other. A certificate that was revoked while its renewal was open is no longer issued again, and the certificate a renewal replaces is marked as revoked only once the new one is there in full.
 - **A YubiKey pulled out in the middle of the wizard** left its step empty, and once plugged in again, the step had forgotten what had happened. The step now stays, says which YubiKey to connect, and keeps what was typed.
 - **A CA that was not finished can be started again.** If the touch for a new CA did not come, its key stayed on the YubiKey without a certificate. After leaving the step, the wizard then refused that YubiKey with "slot 9c of this YubiKey is already in use" while showing its slot as empty. The window and `yca devices` now show such a key for what it is, and the wizard replaces it once the serial number is typed, as it does with anything else in the slot.
 - **Trying a step of the wizard again** no longer asks a second time where the workspace folder goes, or for the PIN and PUK a new YubiKey was already given.

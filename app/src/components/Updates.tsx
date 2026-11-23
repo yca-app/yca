@@ -12,7 +12,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { api, type NewVersion, type UpdateProgress, type UpdateStatus } from "@/lib/api";
+import {
+  api,
+  UPDATE_CANCELLED,
+  type NewVersion,
+  type UpdateProgress,
+  type UpdateStatus,
+} from "@/lib/api";
 import { formatDate, t } from "@/lib/text";
 import { cn } from "@/lib/utils";
 
@@ -210,6 +216,10 @@ export function useUpdates({
   const [phase, setPhase] = useState<Phase>("checking");
   const [progress, setProgress] = useState<UpdateProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The version that is being installed, as it was when the person said
+  // so. What the dialog shows while it downloads is this, whatever a look
+  // that comes back late has to say.
+  const [chosen, setChosen] = useState<NewVersion | null>(null);
 
   // What the app knows about itself, asked once.
   useEffect(() => {
@@ -342,6 +352,7 @@ export function useUpdates({
     if (!found) return;
     const shown = found.version;
     turn.current += 1;
+    setChosen(found);
     setPhase("downloading");
     setProgress(null);
     setError(null);
@@ -365,6 +376,11 @@ export function useUpdates({
       });
     } catch (reason) {
       localStorage.removeItem(INSTALLING);
+      // Given up by the person: back to where they said to install it.
+      if (reason === UPDATE_CANCELLED) {
+        setPhase("found");
+        return;
+      }
       setError(String(reason));
       setPhase("not-installed");
     }
@@ -378,8 +394,12 @@ export function useUpdates({
 
   if (!status?.available) return { open: false, notice: null, dialog: null };
 
-  // Once it is being downloaded, it is seen through.
+  // While it is downloaded and put in place the dialog stays. A download
+  // can be given up with its own button; what is put in place is seen
+  // through.
   const working = phase === "downloading" || phase === "installing";
+  // What the dialog is about: while it works, the version that was chosen.
+  const subject = working ? (chosen ?? found) : found;
   const close = () => {
     if (!working) setOpen(false);
   };
@@ -476,12 +496,12 @@ export function useUpdates({
 
         {/* From which version to which, and since when the new one is out:
             there from the moment it is found until it is in place. */}
-        {found && phase !== "checking" && phase !== "current" && phase !== "no-answer" && (
+        {subject && phase !== "checking" && phase !== "current" && phase !== "no-answer" && (
           <div className="flex items-center justify-between gap-3">
-            <Versions from={status.version} to={found.version} />
-            {found.date && (
+            <Versions from={status.version} to={subject.version} />
+            {subject.date && (
               <span className="text-xs text-muted-foreground">
-                {t.update.released(formatDate(found.date))}
+                {t.update.released(formatDate(subject.date))}
               </span>
             )}
           </div>
@@ -544,6 +564,16 @@ export function useUpdates({
               <span className="block text-xs text-muted-foreground">{t.update.autoHint}</span>
             </span>
           </label>
+        )}
+
+        {/* A download can take a while on a slow line, or never end on a
+            broken one: it can be given up. */}
+        {phase === "downloading" && (
+          <DialogFooter>
+            <Button variant="ghost" className="mr-auto" onClick={() => void api.cancelUpdate()}>
+              {t.cancel}
+            </Button>
+          </DialogFooter>
         )}
 
         {!working && (

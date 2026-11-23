@@ -6,7 +6,7 @@ What changed in each release, written for the people who use the app. The format
 
 ### Added
 
-- **The app updates itself.** It looks for a newer release when it starts, at most once a day, and says so in its window. Nothing is downloaded until you say so: Update… shows what changed, and Install and restart downloads the new version, checks its signature and puts it in place of the old one. Check for Updates… is in the app's menu, and the dialog has the switch that stops the app from looking by itself. This is the first version that can do it, so it has to be installed over 1.0.0 by hand once more.
+- **The app updates itself.** It looks for a newer release when it starts, at most once a day, and says so in its window. Nothing is downloaded until you say so: Update… shows what changed, and Install and restart downloads the new version, checks its signature and puts it in place of the old one. A download can be cancelled, and gives up by itself if it stalls or if more arrives than an update can be. Check for Updates… is in the app's menu, and the dialog has the switch that stops the app from looking by itself. This is the first version that can do it, so it has to be installed over 1.0.0 by hand once more.
 
 ### Changed
 

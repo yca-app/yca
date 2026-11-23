@@ -13,7 +13,8 @@
 //! any of it is used, and the app that is running stays where it is until
 //! the new one is in its place.
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -35,10 +36,44 @@ const MENU_ITEM: &str = "check-for-updates";
 /// How long the question whether there is a newer version may take.
 const PATIENCE: Duration = Duration::from_secs(20);
 
+/// How long a download may go without a single byte arriving, and how long
+/// it may take in all. A server that stops answering, or that feeds the
+/// app a trickle for ever, does not keep the app waiting on it.
+const STALLED: Duration = Duration::from_secs(30);
+const DOWNLOAD_PATIENCE: Duration = Duration::from_secs(30 * 60);
+
+/// More than an update can be. The app is some ten megabytes; what
+/// arrives is kept in memory until its signature is checked, so a server
+/// that sends without end is cut off here and not when memory runs out.
+const LARGEST_UPDATE: u64 = 300 * 1024 * 1024;
+
+/// What the window is told when a download was given up because the
+/// person said so, which is not something that went wrong.
+const CANCELLED: &str = "cancelled";
+
 /// The newer version that was found last, kept for when it is installed:
 /// what a person agreed to is then what they get.
 #[derive(Default)]
 pub(crate) struct Found(Mutex<Option<Update>>);
+
+/// Something that stops a download when it is called.
+type Stop = Box<dyn Fn() + Send + Sync>;
+
+/// How to stop the download that is under way, if one is.
+#[derive(Default)]
+pub(crate) struct Downloading(Mutex<Option<Stop>>);
+
+impl Downloading {
+    fn set(&self, stop: Option<Stop>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = stop;
+    }
+
+    fn stop(&self) {
+        if let Some(stop) = self.0.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            stop();
+        }
+    }
+}
 
 /// Whether this app was built to update itself.
 fn enabled(app: &AppHandle) -> bool {
@@ -49,6 +84,7 @@ fn enabled(app: &AppHandle) -> bool {
 /// "Check for Updates…" into the menu, under About.
 pub(crate) fn setup(app: &App) -> tauri::Result<()> {
     app.manage(Found::default());
+    app.manage(Downloading::default());
     if !enabled(app.handle()) {
         return Ok(());
     }
@@ -111,9 +147,17 @@ pub async fn check_for_update(app: AppHandle) -> Result<Option<NewVersion>, Stri
     if !enabled(&app) {
         return Err("this app was not built to update itself".to_owned());
     }
+    // The release says where to ask, and that is an address with TLS.
+    // What the answer names as the place to download from is held to the
+    // same: the library would fetch the archive over plain HTTP, and
+    // follow a redirect there, with only a note in a log. A build that is
+    // told to ask a plain address, as one for trying updates out on this
+    // Mac is, is left to it.
+    let secure = !plain_addresses_allowed(&app);
     let update = app
         .updater_builder()
         .timeout(PATIENCE)
+        .configure_client(move |client| client.read_timeout(STALLED).https_only(secure))
         .build()
         .map_err(|e| e.to_string())?
         .check()
@@ -132,6 +176,18 @@ pub async fn check_for_update(app: AppHandle) -> Result<Option<NewVersion>, Stri
     Ok(found)
 }
 
+/// Whether this build was told that it may ask a plain HTTP address for
+/// updates, which no release is.
+fn plain_addresses_allowed(app: &AppHandle) -> bool {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|updater| updater.get("dangerousInsecureTransportProtocol"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// How far a download has come.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -148,10 +204,15 @@ struct Progress {
 /// place of this app and starts it. `version` is the one the person was
 /// shown: nothing else is installed in its name.
 ///
+/// The download can be given up with [`cancel_update`] for as long as it
+/// lasts, and gives up by itself if nothing arrives for a while, if it
+/// takes too long in all, or if more arrives than an update can be. Once
+/// everything is here and checked it is seen through.
+///
 /// Does not come back when it works: the app is started anew.
 #[tauri::command]
 pub async fn install_update(app: AppHandle, version: String) -> Result<(), String> {
-    let update = app
+    let mut update = app
         .state::<Found>()
         .0
         .lock()
@@ -159,40 +220,93 @@ pub async fn install_update(app: AppHandle, version: String) -> Result<(), Strin
         .clone()
         .filter(|update| update.version == version)
         .ok_or_else(|| "that version is not the one that was found; look again".to_owned())?;
+    // The question whether there is an update has its own, shorter limit;
+    // what it found comes without one.
+    update.timeout = Some(DOWNLOAD_PATIENCE);
 
-    let mut downloaded = 0;
-    let progress = app.clone();
-    let finished = app.clone();
-    update
-        .download_and_install(
-            move |chunk, total| {
-                downloaded += chunk as u64;
-                let _ = progress.emit(
-                    PROGRESS_EVENT,
-                    Progress {
-                        downloaded,
-                        total,
-                        installing: false,
+    // The download runs as a task of its own, so that it can be stopped
+    // from outside: by the person, and by the count of what has arrived.
+    let too_large = Arc::new(AtomicBool::new(false));
+    let stop: Arc<Mutex<Option<Stop>>> = Arc::default();
+    let task = tauri::async_runtime::spawn({
+        let update = update.clone();
+        let progress = app.clone();
+        let (too_large, stop) = (too_large.clone(), stop.clone());
+        let mut downloaded = 0;
+        async move {
+            update
+                .download(
+                    move |chunk, total| {
+                        downloaded += chunk as u64;
+                        if downloaded > LARGEST_UPDATE
+                            || total.is_some_and(|all| all > LARGEST_UPDATE)
+                        {
+                            too_large.store(true, Ordering::Relaxed);
+                            if let Some(stop) =
+                                stop.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                            {
+                                stop();
+                            }
+                            return;
+                        }
+                        let _ = progress.emit(
+                            PROGRESS_EVENT,
+                            Progress {
+                                downloaded,
+                                total,
+                                installing: false,
+                            },
+                        );
                     },
-                );
-            },
-            move || {
-                let _ = finished.emit(
-                    PROGRESS_EVENT,
-                    Progress {
-                        downloaded: 0,
-                        total: None,
-                        installing: true,
-                    },
-                );
-            },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+                    || {},
+                )
+                .await
+        }
+    });
+    let stopper = || -> Stop {
+        let task = task.inner().abort_handle();
+        Box::new(move || task.abort())
+    };
+    *stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(stopper());
+    app.state::<Downloading>().set(Some(stopper()));
+    let arrived = task.await;
+    app.state::<Downloading>().set(None);
+
+    let archive = match arrived {
+        Ok(Ok(archive)) => archive,
+        Ok(Err(e)) => return Err(e.to_string()),
+        // Stopped: because too much came, or because the person said so.
+        Err(_) if too_large.load(Ordering::Relaxed) => {
+            return Err(
+                "the download is larger than an update can be, and was given up".to_owned(),
+            );
+        }
+        Err(_) => return Err(CANCELLED.to_owned()),
+    };
+
+    // All of it is here and its signature holds. From here it is seen
+    // through.
+    let _ = app.emit(
+        PROGRESS_EVENT,
+        Progress {
+            downloaded: 0,
+            total: None,
+            installing: true,
+        },
+    );
+    update.install(archive).map_err(|e| e.to_string())?;
 
     // The new app is in place. This one makes way for it, once nothing is
     // talking to a YubiKey any more.
     let lock = app.state::<KeyLock>();
     let _idle = lock.wait();
     app.restart();
+}
+
+/// Gives up the download that is under way. The window then hears from
+/// [`install_update`] that it was cancelled. Too late once the download is
+/// done: what is being put in place is not interrupted.
+#[tauri::command]
+pub fn cancel_update(app: AppHandle) {
+    app.state::<Downloading>().stop();
 }

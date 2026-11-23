@@ -361,6 +361,10 @@ export interface NewVersion {
   date: string | null;
 }
 
+/** What `installUpdate` rejects with when the download was given up
+ *  because the person said so. That is not something that went wrong. */
+export const UPDATE_CANCELLED = "cancelled";
+
 /** How far a new version has come. */
 export interface UpdateProgress {
   /** Bytes that are here. */
@@ -685,6 +689,13 @@ export const api = {
     }
   },
   /**
+   * Gives up the download that `installUpdate` is waiting for, which then
+   * rejects with `UPDATE_CANCELLED`. Too late once everything is here and
+   * is being put in place.
+   */
+  cancelUpdate: (): Promise<void> =>
+    inApp ? invoke("cancel_update") : sample.cancelUpdate(),
+  /**
    * Has `handler` called whenever "Check for Updates…" is chosen in the
    * app's menu. Resolves to what stops that.
    */
@@ -853,6 +864,8 @@ const previewUpdate = new URLSearchParams(window.location.search).get("update");
 // The version the preview runs: after it has "installed" one, that one.
 const PREVIEW_VERSION = "yca.previewVersion";
 const previewVersion = () => sessionStorage.getItem(PREVIEW_VERSION) ?? "1.0.1";
+// Whether the preview's download was told to stop.
+let previewCancelled = false;
 // What changed, as a release says it: its entry in the changelog.
 const previewNotes = [
   "### Changed",
@@ -1060,8 +1073,10 @@ const sample = {
     onProgress: (progress: UpdateProgress) => void,
   ): Promise<void> => {
     const total = 7_400_000;
+    previewCancelled = false;
     for (let part = 1; part <= 12; part += 1) {
       await pause(180);
+      if (previewCancelled) throw UPDATE_CANCELLED;
       onProgress({ downloaded: Math.round((total * part) / 12), total, installing: false });
     }
     if (previewUpdate === "broken") throw "signature verification failed";
@@ -1071,6 +1086,9 @@ const sample = {
     sessionStorage.setItem(PREVIEW_VERSION, version);
     window.location.reload();
     await new Promise(() => {});
+  },
+  cancelUpdate: async (): Promise<void> => {
+    previewCancelled = true;
   },
   updateAsked: async (handler: () => void): Promise<() => void> => {
     if (!new URLSearchParams(window.location.search).has("check")) return () => {};

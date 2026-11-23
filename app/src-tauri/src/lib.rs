@@ -142,7 +142,8 @@ pub fn run() {
             setup::reset_key,
             update::update_status,
             update::check_for_update,
-            update::install_update
+            update::install_update,
+            update::cancel_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

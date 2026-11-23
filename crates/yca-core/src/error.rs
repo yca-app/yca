@@ -52,7 +52,7 @@ pub enum Error {
 
     /// The YubiKey rejected the PUK. Each wrong PUK uses up one attempt,
     /// and there is nothing to unblock a PUK with.
-    #[error("wrong PUK, {attempts_left} attempts left before it locks for good")]
+    #[error("wrong PUK, {attempts_left} attempts left before it locks permanently")]
     WrongPuk {
         /// How many more wrong PUKs the key tolerates.
         attempts_left: u8,

@@ -150,31 +150,47 @@ export function KeyDialog({ open, onOpenChange, device, task, workspaceRole, onD
           <p className="text-sm text-muted-foreground">{words.about}</p>
 
           {task === "reset" && device && (
-            <div className="flex flex-col gap-1.5 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2.5 text-sm">
-              {device.ca && (
-                <p className="flex items-start gap-2 text-destructive">
-                  <TriangleAlert className="mt-0.5 size-4 shrink-0" />
-                  <span>
-                    {t.keyHolds(t.roleInText[device.ca.role], commonName(device.ca.subject))}{" "}
-                    {workspaceRole && t.key.reset.ofWorkspace[workspaceRole]}
-                  </span>
-                </p>
-              )}
-              {device.otherSlots.length > 0 && (
-                <p className="text-destructive">{t.key.reset.otherSlots(device.otherSlots)}</p>
-              )}
-              <Label htmlFor="key-serial" className="font-normal">
-                {t.destroyConfirm(device.serial)}
-              </Label>
-              <Input
-                id="key-serial"
-                value={confirmation}
-                onChange={(event) => setConfirmation(event.target.value)}
-                inputMode="numeric"
-                autoComplete="off"
-                autoFocus
-                className="w-44 tabular-nums"
-              />
+            <div className="flex flex-col gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2.5 text-sm">
+              {/* What is lost is said in red, down to the last of it, that
+                  it cannot be undone. What is asked for comes after, and
+                  is not red. */}
+              <div className="flex flex-col gap-1.5">
+                {device.ca && (
+                  <p className="flex items-start gap-2 text-destructive">
+                    <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+                    <span>
+                      {t.keyHolds(t.roleInText[device.ca.role], commonName(device.ca.subject))}{" "}
+                      {t.destroyed}
+                      {workspaceRole && ` ${t.key.reset.ofWorkspace[workspaceRole]}`}
+                      {device.otherSlots.length === 0 && ` ${t.cannotBeUndone}`}
+                    </span>
+                  </p>
+                )}
+                {device.otherSlots.length > 0 && (
+                  <p className="text-destructive">
+                    {t.key.reset.otherSlots(device.otherSlots)} {t.cannotBeUndone}
+                  </p>
+                )}
+                {!device.ca && device.otherSlots.length === 0 && (
+                  <p className="text-destructive">{t.cannotBeUndone}</p>
+                )}
+              </div>
+              {/* A whole sentence stands over this field, not a word or
+                  two, and wants more room above it than a label does. */}
+              <div className="flex flex-col gap-2.5">
+                <Label htmlFor="key-serial" className="font-normal">
+                  {t.destroyConfirm(device.serial)}
+                </Label>
+                <Input
+                  id="key-serial"
+                  value={confirmation}
+                  onChange={(event) => setConfirmation(event.target.value)}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  autoFocus
+                  className="w-44 tabular-nums"
+                />
+              </div>
             </div>
           )}
 

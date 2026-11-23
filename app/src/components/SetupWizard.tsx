@@ -644,7 +644,7 @@ function KeyState({
   if (device.slotInUse) {
     return (
       <span className="mt-0.5 block text-xs text-amber-700 dark:text-amber-400">
-        {holds(device)}
+        {holds(device)} {t.destroyedForNew}
       </span>
     );
   }
@@ -760,6 +760,14 @@ function KeyStep({
       : pin.length >= 6) &&
     (!signer || (signer.connected && signerPin.length >= 6));
   const confirmed = !destroys || confirmation.trim() === String(device.serial);
+  // What is wrong with a new PIN and PUK as they stand, while they are
+  // being typed.
+  const amiss =
+    (pinRepeat !== "" && pin !== pinRepeat) || (pukRepeat !== "" && puk !== pukRepeat)
+      ? t.credentialsDiffer
+      : (pin !== "" && !lengthOk(pin)) || (puk !== "" && !lengthOk(puk))
+        ? t.credentialLength
+        : null;
   // Both YubiKeys have to be there before anything is started.
   const ready = connected && alsoNeeded === undefined && credentialsOk && confirmed;
 
@@ -897,14 +905,16 @@ function KeyStep({
                   invalid={pukRepeat !== "" && puk !== pukRepeat}
                 />
               </div>
-              <p className="-mt-1 text-xs text-muted-foreground">
-                {(pinRepeat !== "" && pin !== pinRepeat) ||
-                (pukRepeat !== "" && puk !== pukRepeat) ? (
-                  <span className="text-destructive">{t.credentialsDiffer}</span>
-                ) : (pin !== "" && !lengthOk(pin)) || (puk !== "" && !lengthOk(puk)) ? (
-                  <span className="text-destructive">{t.credentialLength}</span>
-                ) : (
-                  t.newCredentialsHint
+              {/* What is wrong with what was typed is said in the place of
+                  the hint, and the hint keeps its room meanwhile: this
+                  changes with every key that is pressed, and nothing
+                  below it may move for that. */}
+              <p className="-mt-1 grid text-xs text-muted-foreground">
+                <span className={cn("col-start-1 row-start-1", amiss && "invisible")}>
+                  {t.newCredentialsHint}
+                </span>
+                {amiss && (
+                  <span className="col-start-1 row-start-1 text-destructive">{amiss}</span>
                 )}
               </p>
             </>
@@ -922,19 +932,23 @@ function KeyStep({
           )}
 
           {connected && destroys && (
-            <div className="flex flex-col gap-1.5 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2.5">
+            <div className="flex flex-col gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2.5">
               <p className="flex items-start gap-2 text-destructive">
                 <TriangleAlert className="mt-0.5 size-4 shrink-0" />
-                {holds(device)}
+                {holds(device)} {t.destroyedForNew} {t.cannotBeUndone}
               </p>
-              <Label className="font-normal">{t.destroyConfirm(device.serial)}</Label>
-              <Input
-                value={confirmation}
-                onChange={(event) => setConfirmation(event.target.value)}
-                inputMode="numeric"
-                autoComplete="off"
-                className="w-44 tabular-nums"
-              />
+              {/* A whole sentence stands over this field, not a word or
+                  two, and wants more room above it than a label does. */}
+              <div className="flex flex-col gap-2.5">
+                <Label className="font-normal">{t.destroyConfirm(device.serial)}</Label>
+                <Input
+                  value={confirmation}
+                  onChange={(event) => setConfirmation(event.target.value)}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  className="w-44 tabular-nums"
+                />
+              </div>
             </div>
           )}
         </div>

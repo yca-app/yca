@@ -1933,8 +1933,9 @@ fn reset(serial: u32) -> Result<()> {
         say!("  no certificates");
     }
     say!();
-    say!("Resetting destroys all of it for good, with every PIV key on this YubiKey,");
-    say!("and sets the PIN, the PUK and the management key back to the factory ones.");
+    say!("Resetting destroys all of it, with every PIV key on this YubiKey, and sets the");
+    say!("PIN, the PUK and the management key back to the factory ones. This cannot be");
+    say!("undone.");
     say!("The YubiKey's own attestation certificate stays, and FIDO2, OATH and OpenPGP");
     say!("on the same YubiKey are not touched.");
     confirm_serial(serial)?;

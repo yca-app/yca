@@ -20,9 +20,9 @@ export const t = {
   adopt: "Start from these YubiKeys",
   adoptRootOnly: "Start from the root CA",
   adoptHint:
-    "Creates a workspace folder for this CA, where you choose, and copies both CA certificates into it. Nothing on the YubiKeys changes and no PIN is asked for.",
+    "The app creates a workspace folder for this CA in a place you choose, and copies both CA certificates into it. Nothing on the YubiKeys changes, and you are not asked for a PIN.",
   adoptHintRootOnly:
-    "Creates a workspace folder for this CA, where you choose, and copies the root CA certificate into it. If it has an issuing CA, that can be added later, once its YubiKey is connected. Nothing on the YubiKey changes and no PIN is asked for.",
+    "The app creates a workspace folder for this CA in a place you choose, and copies the root CA certificate into it. If the CA has an issuing CA, you can add it later, once its YubiKey is connected. Nothing on the YubiKey changes, and you are not asked for a PIN.",
   // Said where someone decides where the workspace goes.
   workspaceBackup:
     "The workspace will hold every certificate you issue, with its private key. Keep it where only you can read it. The keys of the CA itself are never in it.",
@@ -33,8 +33,8 @@ export const t = {
   // Under the button that makes a CA, where no connected key holds one.
   createHint: (keys: number) =>
     keys === 1
-      ? "Makes a CA on this YubiKey, step by step, and a workspace folder to go with it."
-      : "Makes a CA on these YubiKeys, step by step, and a workspace folder to go with it.",
+      ? "The app makes a CA on this YubiKey, step by step, and a workspace folder for it."
+      : "The app makes a CA on these YubiKeys, step by step, and a workspace folder for it.",
   adoptOneRoot: "More than one root CA is connected. Leave in only the one to start from.",
   leftOut: "Signed by a different root CA. It will be left out.",
   adoptWhere: "Where should the workspace folder go?",
@@ -47,7 +47,7 @@ export const t = {
   openAnother: "Open another workspace…",
   workspace: "Workspace",
   workspaceAbout:
-    "Everything of this CA on this Mac: its certificates, and a folder for every certificate issued, private key included. Worth backing up, and worth keeping private. The keys of the CA itself are only on the YubiKeys.",
+    "This folder has everything of this CA that is on this Mac: its certificates, and a folder for every certificate you issued, with its private key. It is worth backing up and worth keeping private. The keys of the CA itself are only on the YubiKeys.",
   switchWorkspace: "Switch",
   startFromKeys: "Start from connected YubiKeys…",
   couldNotOpen: "This folder could not be opened",
@@ -80,14 +80,24 @@ export const t = {
   // Short, beside the key's serial number; in full when pointed at.
   firmware: (version: string) => `fw ${version}`,
   firmwareAbout: (version: string) => `Firmware version ${version}`,
-  keyHolds: (role: string, name: string) =>
-    `Holds the ${role} “${name}”. It will be destroyed for good.`,
-  keyHoldsSomething: "Its CA slot holds something. It will be destroyed for good.",
+  // What is in the CA slot of a YubiKey. Each is a whole sentence about
+  // the thing in the slot, not about the YubiKey: the sentence after it
+  // says what becomes of "it", and that is not the YubiKey.
+  keyHolds: (role: string, name: string) => `The ${role} “${name}” is on this YubiKey.`,
+  keyHoldsSomething: "Something is in the CA slot of this YubiKey.",
   // Left behind by a CA that was given up between its key and its
   // certificate. Nothing can be signed with it, but it is in the way.
   keyHoldsLoneKey:
-    "Its CA slot holds a key without a certificate, left by a CA that was not finished. It will be destroyed for good.",
-  keyFresh: "New. You will choose its PIN.",
+    "A key without a certificate is in the CA slot of this YubiKey, left by a CA that was not finished.",
+  // What becomes of it when a new CA is put on the YubiKey, and when the
+  // YubiKey is reset and nothing takes its place.
+  destroyedForNew: "It will be destroyed for a new one.",
+  destroyed: "It will be destroyed.",
+  // The last thing said in red, where the serial number is then asked for.
+  cannotBeUndone: "This cannot be undone.",
+  // Short enough for one line beside the key in the wizard's list; "it" is
+  // the YubiKey named on the line above.
+  keyFresh: "It is new. You will choose its PIN.",
   keyEmpty: "This YubiKey has an empty CA slot",
   // Followed by the tag with the key's serial number.
   createOn: (role: string, name: string) => `${role} “${name}” on YubiKey`,
@@ -109,8 +119,7 @@ export const t = {
   pinOfSigner: "The YubiKey with the root CA, which signs the new one.",
   showSecret: "Show what is typed",
   hideSecret: "Hide what is typed",
-  destroyConfirm: (serial: number) =>
-    `This cannot be undone. To confirm, type the serial number ${serial}:`,
+  destroyConfirm: (serial: number) => `To confirm, type the serial number ${serial}:`,
   createRoot: "Create root CA",
   createIssuing: "Create issuing CA",
   // While the key is being made. No serial number is named here: the only
@@ -163,7 +172,7 @@ export const t = {
   addIssuingTitle: "New issuing CA",
   addIssuingAbout: (root: string) =>
     `The issuing CA goes on a second YubiKey, the one you will use from day to day. The root CA “${root}” signs it once and can then rest in a safe. Certificates issued so far stay valid.`,
-  holdsWorkspaceRoot: "Holds the root CA of this workspace",
+  holdsWorkspaceRoot: "The root CA of this workspace is on this YubiKey",
   // Followed by the tag with the key's serial number.
   signedByRootOn: (name: string) => `Signed by the root CA “${name}” on YubiKey`,
 
@@ -171,17 +180,17 @@ export const t = {
   replaceIssuing: "Replace this issuing CA…",
   replaceIssuingTitle: "Replace the issuing CA",
   replaceIssuingAbout: (root: string, old: string) =>
-    `For when the YubiKey with “${old}” is lost, stolen or broken. The root CA “${root}” signs a new issuing CA on another YubiKey. Devices go on trusting the root CA, and certificates issued so far stay valid.`,
+    `This is for the situation where the YubiKey with “${old}” is lost, stolen or broken. The root CA “${root}” signs a new issuing CA on another YubiKey. Devices go on trusting the root CA, and certificates issued so far stay valid.`,
   revokeReplaced: "The old YubiKey may be in someone else's hands",
   revokeReplacedHint: (old: string) =>
-    `Revokes “${old}” as well. Devices that check the root CA's revocation list then refuse every certificate it signed, so those have to be renewed.`,
+    `This revokes “${old}” as well. Devices that check the root CA's revocation list then refuse every certificate it signed, so those have to be renewed.`,
   replacedCa: (name: string) => `Replaced: “${name}”`,
   replacedCaValid: "Its certificates stay valid.",
   replacedCaRevoked: (date: string) => `Revoked on ${date}`,
   revokeCa: "Revoke…",
   revokeCaTitle: "Revoke this issuing CA?",
   revokeCaBody:
-    "For when its YubiKey may be in someone else's hands. Devices that check the root CA's revocation list will refuse every certificate it signed, so those have to be renewed. It cannot be made valid again. Devices learn of it only from the root CA's revocation list, which you sign afterwards.",
+    "This is for the situation where its YubiKey may be in someone else's hands. Devices that check the root CA's revocation list will refuse every certificate it signed, so those have to be renewed. It cannot be made valid again. Devices learn of it only from the root CA's revocation list, which you sign afterwards.",
 
   // What a program asks for on the person's behalf
   agent: {
@@ -221,7 +230,7 @@ export const t = {
     menu: "Files in another form…",
     title: "Files in another form",
     about:
-      "For an upload form that asks for something else. Nothing is issued: it is the same certificate and the same key. The folder then holds the new files and none of the old.",
+      "This is for an upload form that asks for something else. Nothing is issued: it is the same certificate and the same key. The folder then holds the new files and none of the old.",
     noKey:
       "Its private key is not in the workspace, so the files are certificates only and nothing goes into one file.",
     onlyOne:
@@ -295,10 +304,6 @@ export const t = {
     root: "Root CA",
     issuing: "Issuing CA (intermediate)",
   } satisfies Record<CaRole, string>,
-  roleHint: {
-    root: "Signs the issuing CA. Kept in a safe.",
-    issuing: "Signs everyday certificates.",
-  } satisfies Record<CaRole, string>,
   noIssuing: "None",
   noIssuingAbout: "The root CA signs certificates itself.",
   validUntil: (date: string) => `Valid until ${date}`,
@@ -346,14 +351,14 @@ export const t = {
     unblock: {
       title: "Unblock PIN",
       about:
-        "Sets a new PIN with the PUK, for a PIN that is forgotten or locked. Take care: a wrong PUK costs one of its attempts, and nothing unblocks a PUK.",
+        "This is for the situation where the PIN is forgotten or locked: a new PIN is set with the PUK. Take care: a wrong PUK costs one of its attempts, and nothing unblocks a PUK.",
       confirm: "Set new PIN",
       done: "The new PIN is set.",
     },
     reset: {
       title: "Reset this YubiKey?",
       about:
-        "For when both the PIN and the PUK are lost, or to start over. It empties the certificate store of the YubiKey (PIV): every key and certificate in it is destroyed for good, and the PIN and PUK go back to the factory ones. Passkeys and whatever else the YubiKey holds outside that store are not touched.",
+        "This is for the situation where both the PIN and PUK are lost, or when you want to start over. It clears the certificate store of the YubiKey (PIV): every key and certificate in it is destroyed, and the PIN and PUK go back to the factory ones. Passkeys and anything else on the YubiKey outside that store are not touched.",
       confirm: "Reset YubiKey",
       done: "The YubiKey is reset. Its PIN is 123456 and its PUK 12345678 again, as on every new YubiKey. It gets a PIN of its own when you put a CA on it.",
       // Said after what the key holds, if that is a CA of the open workspace.
@@ -364,8 +369,8 @@ export const t = {
       } satisfies Record<CaRole, string>,
       otherSlots: (slots: string[]) =>
         slots.length === 1
-          ? `It also holds a certificate in slot ${slots[0]}, which goes too.`
-          : `It also holds certificates in slots ${slots.join(", ")}, which go too.`,
+          ? `The certificate in slot ${slots[0]} goes too.`
+          : `The certificates in slots ${slots.join(", ")} go too.`,
     },
   },
   keyMismatch: "The key on this YubiKey does not match its certificate",
@@ -376,7 +381,8 @@ export const t = {
   keyImported: "This key was put into the YubiKey from outside. Copies of it may exist.",
   rootShouldRest: "Not needed for everyday work. Safer unplugged.",
   otherKeys: "Other YubiKeys",
-  holdsOtherCa: (subject: string) => `Holds “${subject}”, which is not part of this workspace`,
+  holdsOtherCa: (subject: string) =>
+    `This YubiKey has “${subject}”, which is not part of this workspace`,
   // A key without a CA: the slot a CA would be in is empty, or something
   // is in it that is not a CA. The two are told apart, because the first
   // is free to use and the second would lose what it holds.
@@ -450,7 +456,7 @@ export const t = {
   revoke: "Revoke…",
   renewTitle: "Renew certificate",
   renewAbout:
-    "Issues a new certificate for the same key and the same names. The device keeps its private key.",
+    "This issues a new certificate for the same key and the same names. The device keeps its private key.",
   changeNamesTitle: {
     server: "Change host name or IP address",
     client: "Change name or e-mail address",
@@ -515,10 +521,10 @@ export const t = {
   listDone: (number: number, date: string) => `Number ${number} · current until ${date}`,
   listCount: (count: number) =>
     count === 0
-      ? "Names no certificate"
+      ? "It contains no certificates"
       : count === 1
-        ? "Names 1 revoked certificate"
-        : `Names ${count} revoked certificates`,
+        ? "It contains 1 revoked certificate"
+        : `It contains ${count} revoked certificates`,
   sign: "Sign",
 
   // New certificate
@@ -548,7 +554,7 @@ export const t = {
     about: {
       fullchain: "Two files. The certificate file holds the intermediate CA too (fullchain).",
       separate: "Three files, one for each field of the form.",
-      p12: "Everything together, as .p12 or .pfx. Also what a laptop or a phone imports.",
+      p12: "Everything together, as .p12 or .pfx. A laptop or a phone imports it too.",
     },
     // Signed by the root CA there is no intermediate CA. The choice with
     // a file for one stays in sight, switched off: whoever has a form
@@ -627,17 +633,17 @@ export const t = {
   // The root CA signed it itself: nothing comes with the certificate.
   fileFromRoot: {
     "certificate.crt":
-      "The certificate. Goes where the certificate is asked for; there is no intermediate CA.",
+      "The certificate. It goes where the certificate is asked for; there is no intermediate CA.",
   } as Record<string, string>,
   file: {
     "fullchain.crt":
-      "The certificate with the intermediate CA below it. Goes where the certificate is asked for.",
-    "certificate.crt": "The certificate. Goes where the certificate is asked for.",
+      "The certificate with the intermediate CA below it. It goes where the certificate is asked for.",
+    "certificate.crt": "The certificate. It goes where the certificate is asked for.",
     "intermediate-ca.crt":
-      "The intermediate CA. Goes where the intermediate certificate is asked for.",
-    "private-key.key": "The private key. Goes where the private key is asked for.",
+      "The intermediate CA. It goes where the intermediate certificate is asked for.",
+    "private-key.key": "The private key. It goes where the private key is asked for.",
     "certificate.p12":
-      "Certificate, intermediate CA and private key in one. Opens with the password.",
+      "Certificate, intermediate CA and private key in one file. It opens with the password.",
     "issuing.crl.pem": "The revocation list of the issuing CA, in PEM form.",
     "issuing.crl": "The same in DER form, for devices that want that.",
     "root.crl.pem": "The revocation list of the root CA, in PEM form.",

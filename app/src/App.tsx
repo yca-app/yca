@@ -133,15 +133,43 @@ export default function App() {
     setConfirming(true);
   }, []);
 
-  const openFolder = useCallback(async (path: string) => {
+  // The folder the window is meant to show. It is set at once by whatever
+  // opens or closes a workspace on purpose, before anything is read from
+  // the disk: a look at another folder that comes back late is then not
+  // taken for the one that was asked for last.
+  const meant = useRef<string | null>(null);
+
+  // Looks at a workspace again and shows what is there, unless the window
+  // has moved on to another folder since. For what only follows the
+  // folder: a change by another program, or by a dialog of this one.
+  const lookAgain = useCallback(async (path: string) => {
     try {
-      setPki(await api.openPki(path));
+      const found = await api.openPki(path);
+      if (meant.current !== path) return;
+      meant.current = found.path;
+      setPki(found);
       setError(null);
       localStorage.setItem(REMEMBERED_FOLDER, path);
     } catch (reason) {
+      if (meant.current !== path) return;
+      meant.current = null;
       setPki(null);
       setError(`${t.couldNotOpen}: ${String(reason)}`);
     }
+  }, []);
+
+  const openFolder = useCallback(
+    async (path: string) => {
+      meant.current = path;
+      await lookAgain(path);
+    },
+    [lookAgain],
+  );
+
+  // Shows a workspace as a command left it, if it is still the one the
+  // window is on.
+  const showChanged = useCallback((changed: Pki) => {
+    if (meant.current === changed.path) setPki(changed);
   }, []);
 
   const pickFolder = useCallback(async () => {
@@ -151,6 +179,7 @@ export default function App() {
 
   // Takes a freshly started or extended PKI as the open one.
   const adopted = useCallback((result: Pki) => {
+    meant.current = result.path;
     setPki(result);
     setError(null);
     localStorage.setItem(REMEMBERED_FOLDER, result.path);
@@ -226,12 +255,15 @@ export default function App() {
         // The folder went while it was open: deleted, moved or its disk
         // unplugged. The window lets go of it and says so.
         watching = false;
+        // Unless the window is on its way to another folder already.
+        if (meant.current !== pkiPath) return;
+        meant.current = null;
         localStorage.removeItem(REMEMBERED_FOLDER);
         setPki(null);
         setError(t.workspaceGone(pkiPath));
         return;
       }
-      if (known !== undefined && stamp !== known) void openFolder(pkiPath);
+      if (known !== undefined && stamp !== known) void lookAgain(pkiPath);
       known = stamp;
     };
     void look();
@@ -240,7 +272,7 @@ export default function App() {
       watching = false;
       window.clearInterval(timer);
     };
-  }, [pkiPath, openFolder]);
+  }, [pkiPath, lookAgain]);
 
   // YubiKeys come and go; look again every few seconds and on return to
   // the window.
@@ -446,6 +478,7 @@ export default function App() {
         show = () => {
           if (wanted.issuing) setAdding(true);
           else {
+            meant.current = null;
             setPki(null);
             setCreating(true);
           }
@@ -703,6 +736,7 @@ export default function App() {
         }}
         onTrust={() => setTrusting(true)}
         onClose={() => {
+          meant.current = null;
           localStorage.removeItem(REMEMBERED_FOLDER);
           setPki(null);
           setError(null);
@@ -882,7 +916,7 @@ export default function App() {
         task={task}
         pki={pki}
         devices={devices}
-        onSigned={() => void openFolder(pki.path)}
+        onSigned={() => void lookAgain(pki.path)}
         onProgress={progressed}
         onTrust={() => {
           setSigning(false);
@@ -894,7 +928,7 @@ export default function App() {
         onOpenChange={setRepackOpen}
         certificate={repacking}
         path={pki.path}
-        onDone={setPki}
+        onDone={showChanged}
         onShow={(folder) => void api.reveal(folder)}
       />
       <TrustDialog open={trusting} onOpenChange={setTrusting} pki={pki} />
@@ -905,7 +939,7 @@ export default function App() {
         groups={groups}
         path={pki.path}
         onDone={(sorted) => {
-          setPki(sorted);
+          showChanged(sorted);
           stopPicking();
         }}
       />
@@ -923,7 +957,12 @@ export default function App() {
         }
         onDone={() => void refreshDevices()}
       />
-      <ConfirmDialog open={confirming} onOpenChange={setConfirming} asked={asked} onDone={setPki} />
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={setConfirming}
+        asked={asked}
+        onDone={showChanged}
+      />
       {updates.dialog}
     </div>
   );

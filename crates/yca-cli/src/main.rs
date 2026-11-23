@@ -8,13 +8,13 @@
 mod mcp;
 
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use time::{Duration, OffsetDateTime};
 use yca_core::device::{self, CaRole, Device};
@@ -1396,10 +1396,34 @@ fn revoke(dir: &Path, serial: &str) -> Result<()> {
     Ok(())
 }
 
+/// Deletes a certificate from the list, with its files and its private
+/// key if the workspace has it. That cannot be undone, so it says what
+/// goes and asks first, at the terminal. A program asks for it through
+/// `yca mcp`, which has the app put the question to the person.
 fn delete(dir: &Path, serial: &str) -> Result<()> {
     let mut store = Store::open(dir)?;
     let now = OffsetDateTime::now_utc();
-    let deleted = store.delete(serial, now)?;
+    let wanted: Record = store.find(serial)?.clone();
+    say!(
+        "Certificate {} ({}) goes off the list, and its files out of the workspace{}.",
+        short(&wanted.serial),
+        wanted.names.join(", "),
+        match store.has_key(&wanted) {
+            true => ", its private key among them",
+            false => "",
+        }
+    );
+    if wanted.revoked_at.is_none() && now < wanted.not_after {
+        say!(
+            "The certificate itself goes on working until {} and can then no longer be \
+             revoked from here. To stop it from working, revoke it instead.",
+            wanted.not_after.date()
+        );
+    }
+    if ask_the_person("Type yes to delete it: ")? != "yes" {
+        bail!("not confirmed; nothing was deleted");
+    }
+    let deleted = store.delete(&wanted.serial, now)?;
     answer_with_workspace(&store)?;
     let record = &deleted.record;
     say!(
@@ -2058,14 +2082,38 @@ fn prompt_pin(device: &Device) -> Result<Zeroizing<String>> {
 
 /// Makes the user type the serial number of the YubiKey about to be wiped.
 fn confirm_serial(serial: u32) -> Result<()> {
-    eprint!("Type the serial number of that YubiKey to confirm: ");
-    std::io::stderr().flush()?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    if answer.trim() != serial.to_string() {
+    let answer = ask_the_person("Type the serial number of that YubiKey to confirm: ")?;
+    if answer != serial.to_string() {
         bail!("the serial number does not match; nothing was changed");
     }
     Ok(())
+}
+
+/// Puts a question to the person at the terminal and returns what they
+/// typed.
+///
+/// It is asked on the terminal itself and read from there, the way a PIN
+/// is, not from standard input: a line that a program pipes in is not a
+/// person agreeing. This is what stands between a script, or an agent
+/// that can run commands, and what cannot be undone. Where there is no
+/// terminal, or the answer is to be a JSON document for a program, nobody
+/// is there to ask, and the command ends without doing it.
+fn ask_the_person(question: &str) -> Result<String> {
+    if JSON.load(Ordering::Relaxed) {
+        bail!("this has to be confirmed by a person at a terminal, so it is not done with --json");
+    }
+    let terminal = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|_| {
+            anyhow!("this has to be confirmed by a person at a terminal, and there is none here")
+        })?;
+    (&terminal).write_all(question.as_bytes())?;
+    (&terminal).flush()?;
+    let mut answer = String::new();
+    std::io::BufReader::new(&terminal).read_line(&mut answer)?;
+    Ok(answer.trim().to_owned())
 }
 
 fn announce_touch(connected: usize, serial: u32) {

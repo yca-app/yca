@@ -147,7 +147,9 @@ The agent can then look at your YubiKeys and workspaces, sort certificates into 
 
 You are not interrupted: a request that comes while you are in the middle of something in the window waits until you are done, and one whose agent has gone away in the meantime is dropped.
 
-There is no way to give an agent a PIN, a PUK or a password through `yca`, and none to reset a YubiKey. If an agent asks you for a PIN, do not tell it.
+There is no way to give an agent a PIN, a PUK or a password through `yca`, and `yca mcp` has no way to reset a YubiKey or to delete a certificate without you. If an agent asks you for a PIN, do not tell it.
+
+An agent that can run commands on your Mac can run `yca` itself, as it can run anything else you can. `yca reset` and `yca delete` therefore ask at the terminal: the confirmation is read from the terminal itself, not from what a program feeds the command, and there is none with `--json`.
 
 ## What to keep in mind
 

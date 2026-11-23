@@ -12,16 +12,19 @@
 # The release workflow on GitHub runs it, and so can a Mac that has the
 # signing certificate. Either way the files of the release end up in
 # target/release-files, under the names they have on GitHub, and the text
-# that goes with them in target/release-parts/release-notes.md.
+# that goes with them in target/release-parts/release-notes.md. Among the
+# files is what the release before needs to update itself to this one: the
+# app in an archive, the signature of that archive, and latest.json, which
+# says where they are.
 #
 # A release carries no code for Intel. On a Mac with Apple silicon such
 # code would run through Rosetta, which macOS 27 warns about and macOS 28
 # no longer offers, and a program running through Rosetta that starts the
 # `yca` command would get it.
 #
-# The signing identity and the notarisation credentials come from the
-# environment, where the person who runs this put them. Nothing here reads
-# or stores a secret.
+# The signing identity, the notarisation credentials and the key that
+# updates are signed with come from the environment, where whoever runs
+# this put them. Nothing here reads or stores a secret.
 
 set -eu
 cd "$(dirname "$0")/.."
@@ -44,10 +47,15 @@ fail() {
 }
 
 # One version, written in two places and described in the changelog; a
-# release is not built until they agree.
-version=$(cargo metadata --no-deps --format-version 1 --locked |
+# release is not built until they agree. And where the project lives, which
+# is where its releases are, and so where an installed app looks for the
+# next one.
+about=$(cargo metadata --no-deps --format-version 1 --locked |
     node -e 'const all = JSON.parse(require("fs").readFileSync(0, "utf8")).packages;
-             console.log(all.find((each) => each.name === "yca-app").version)')
+             const app = all.find((each) => each.name === "yca-app");
+             console.log(app.version, app.repository)')
+version=${about%% *}
+repository=${about#* }
 
 if [ "$signed" = yes ]; then
     target="aarch64-apple-darwin"
@@ -90,6 +98,14 @@ if [ "$signed" = yes ]; then
     else
         fail "no notarisation credentials: set APPLE_API_KEY or APPLE_ID, see RELEASING.md"
     fi
+
+    # A release can be followed by another only if it is signed once more,
+    # with a key of the project's own: the app updates itself to nothing
+    # that is not signed with the key whose public half it was built with.
+    [ -s app/src-tauri/updater.pub ] ||
+        fail "app/src-tauri/updater.pub, the public half of the update key, is missing"
+    [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ] ||
+        fail "TAURI_SIGNING_PRIVATE_KEY is not set: the key updates are signed with, see RELEASING.md"
 else
     bundles=app
 fi
@@ -107,11 +123,17 @@ node scripts/third-party-notices.mjs "$parts/THIRD-PARTY-NOTICES.txt" "$target"
 # What a release has on top of what `tauri dev` and a plain build have. It
 # is said here and not in tauri.conf.json, so that working on the app does
 # not need the command built first.
+#
+# Only a release updates itself, and so only a release is told where to
+# ask for the latest one and which key it has to be signed with. The
+# version in the signature has to be the version that is offered, so that
+# an older release cannot be passed off as a newer one. An app built
+# without this has no updater and makes no connection of its own.
 # shellcheck disable=SC2016
 extra=$(
-    PARTS="$parts" ROOT="$root" node -e '
-        const { PARTS, ROOT } = process.env;
-        console.log(JSON.stringify({
+    PARTS="$parts" ROOT="$root" SIGNED="$signed" REPOSITORY="$repository" node -e '
+        const { PARTS, ROOT, SIGNED, REPOSITORY } = process.env;
+        const extra = {
             bundle: {
                 externalBin: [`${PARTS}/yca`],
                 resources: {
@@ -119,7 +141,19 @@ extra=$(
                     [`${PARTS}/THIRD-PARTY-NOTICES.txt`]: "THIRD-PARTY-NOTICES.txt",
                 },
             },
-        }));'
+        };
+        if (SIGNED === "yes") {
+            const key = `${ROOT}/app/src-tauri/updater.pub`;
+            extra.bundle.createUpdaterArtifacts = true;
+            extra.plugins = {
+                updater: {
+                    pubkey: require("fs").readFileSync(key, "utf8").trim(),
+                    endpoints: [`${REPOSITORY}/releases/latest/download/latest.json`],
+                    requireSignedVersion: true,
+                },
+            };
+        }
+        console.log(JSON.stringify(extra));'
 )
 npm --prefix app run tauri build -- --target "$target" --bundles "$bundles" --config "$extra"
 
@@ -183,29 +217,46 @@ cp "$image" "$files/$name.dmg"
 cp "$parts/THIRD-PARTY-NOTICES.txt" "$files/"
 sum=$(cut -d " " -f 1 "$files/$name.dmg.sha256")
 
-# The text of the release: what the changelog says of this version, and
-# what to hold the download against.
+# What an installed app takes to update itself: the app in an archive, and
+# the signature of that archive. The app in it has to be the finished one,
+# signed and with Apple's ticket attached: one that arrives this way is
+# put in place without Gatekeeper ever being asked about it.
+archive=$(find "$out/macos" -maxdepth 1 -name "*.app.tar.gz" | head -1)
+[ -f "$archive" ] && [ -f "$archive.sig" ] ||
+    fail "no update archive with its signature in $out/macos"
+unpacked=$(mktemp -d)
+tar -xzf "$archive" -C "$unpacked"
+codesign --verify --deep --strict "$unpacked/$(basename "$app")"
+xcrun stapler validate "$unpacked/$(basename "$app")"
+rm -rf "$unpacked"
+cp "$archive" "$files/$name.app.tar.gz"
+cp "$archive.sig" "$files/$name.app.tar.gz.sig"
+
+# What changed, as the changelog says it of this version: the text of the
+# release, and what an installed app shows before it updates itself.
 # shellcheck disable=SC2016
-VERSION="$version" IMAGE="$name.dmg" SUM="$sum" node -e '
-    const { VERSION, IMAGE, SUM } = process.env;
+VERSION="$version" node -e '
     const lines = require("fs").readFileSync("CHANGELOG.md", "utf8").split("\n");
-    const rest = lines.slice(lines.findIndex((line) => line.startsWith(`## ${VERSION} `)) + 1);
+    const rest = lines.slice(lines.findIndex((line) => line.startsWith(`## ${process.env.VERSION} `)) + 1);
     const next = rest.findIndex((line) => line.startsWith("## "));
-    const entry = rest.slice(0, next < 0 ? undefined : next).join("\n").trim();
-    const macos = require("./app/src-tauri/tauri.conf.json").bundle.macOS.minimumSystemVersion;
-    console.log([
-        entry,
-        "",
-        "### Checking the download",
-        "",
-        `SHA-256 of \`${IMAGE}\`:`,
-        "",
-        "```",
-        SUM,
-        "```",
-        "",
-        `The app is signed with a Developer ID and notarised by Apple. It runs on Macs with Apple silicon and macOS ${macos} or newer.`,
-    ].join("\n"));' >"$parts/release-notes.md"
+    console.log(rest.slice(0, next < 0 ? undefined : next).join("\n").trim());' >"$parts/changes.md"
+
+# The text of the release adds what to hold the download against.
+macos=$(node -p 'require("./app/src-tauri/tauri.conf.json").bundle.macOS.minimumSystemVersion')
+{
+    cat "$parts/changes.md"
+    # shellcheck disable=SC2016
+    printf '\n### Checking the download\n\nSHA-256 of `%s`:\n\n```\n%s\n```\n\n' "$name.dmg" "$sum"
+    echo "The app is signed with a Developer ID and notarised by Apple. It runs on Macs with Apple silicon and macOS $macos or newer."
+} >"$parts/release-notes.md"
+
+# What an installed app asks for when it looks for a newer version. It is
+# written only if the archive, its signature and the key belong together.
+node scripts/update-manifest.mjs \
+    --archive "$files/$name.app.tar.gz" --signature "$files/$name.app.tar.gz.sig" \
+    --key app/src-tauri/updater.pub --version "$version" \
+    --url "$repository/releases/download/v$version/$name.app.tar.gz" \
+    --notes "$parts/changes.md" --out "$files/latest.json"
 
 echo
 echo "Release $version, in $files:"

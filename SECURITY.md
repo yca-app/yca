@@ -26,6 +26,7 @@ A report is a vulnerability if it breaks one of these:
 - **A YubiKey is written to only where a CA needs it:** PIV slot 9c, and the PIN, PUK and management key. The other PIV slots are touched by nothing but the reset of the PIV application, which says what it destroys and asks for the serial number. FIDO2, OpenPGP and OATH are never touched.
 - **Files are written only inside the workspace folder** the person chose, whatever a certificate, a group or a request is named.
 - **A certificate that is not what was asked for is not issued:** the names, the purpose and the validity in it are the ones shown.
+- **The app replaces itself only when asked, and only with a release of the project.** Nothing is downloaded before the person says so, and a download that is not signed with the project's update key, or is not the version that was shown, is not installed.
 
 ## What it does not promise
 
@@ -36,3 +37,4 @@ These are known limits, described in the [README](README.md#what-to-keep-in-mind
 - A program running as you can make the window show a signing dialog. It cannot type the PIN or touch the key.
 - A YubiKey's statement that a key was made inside it is kept, but not checked against Yubico's root certificate.
 - The libraries the app is built on have not been audited, and the one that talks to the YubiKey is used in a pre-release version.
+- Releases are built on GitHub, and the key that updates are signed with is kept there. Whoever controls the project's repository can release an update.

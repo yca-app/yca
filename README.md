@@ -83,6 +83,12 @@ The keys of the CA are never in it. The private keys of the certificates you iss
 
 Download the disk image from the [latest release](https://github.com/yca-app/yca/releases/latest), open it and drag the app to Applications. The app is signed and notarised by Apple. Each release lists the SHA-256 of its disk image, to compare with what you downloaded.
 
+## Updates
+
+The app looks for a newer release when it starts, at most once a day, and says so in its window when there is one. Nothing is downloaded until you say so. Update… shows what changed, and Install and restart downloads the new version, checks it against a key built into the app, puts it in place of the old one and starts it. Check for Updates… in the app's menu looks at once. The same dialog has the switch that stops the app from looking by itself.
+
+Looking is one request to GitHub, where the releases are, for the description of the latest one. Nothing about you, your workspace or your YubiKeys is sent. An app you built yourself does not look, and cannot update itself.
+
 ## Building from source
 
 To build the app yourself you need Rust 1.90 or newer and a current Node.js.
@@ -150,6 +156,7 @@ There is no way to give an agent a PIN, a PUK or a password through `yca`, and n
 - **The workspace holds private keys of the certificates you issue.** Whoever reads it can pose as those devices until you revoke them. They cannot issue anything: the keys of the CA are only on the YubiKeys.
 - **An agent can ask, but not sign.** A program that reaches `yca mcp` or the app's socket can make the window show a signing dialog. Nothing is signed unless you type the PIN and touch the key, so read what the dialog says before you do.
 - **The app trusts its workspace folder.** It checks that the CA certificates in it belong together and match the connected YubiKeys, but the list of issued and revoked certificates is not signed.
+- **An update is as good as the project's repository.** Releases are built on GitHub, where the key that updates are signed with is kept as well. The app installs nothing that is not signed with that key, and nothing unasked, but whoever controls the repository can release an update.
 - A YubiKey's statement that a key was made inside it is kept, but not yet checked against Yubico's own root certificate.
 
 ## Development

@@ -10,6 +10,7 @@ mod agent;
 mod issue;
 mod manage;
 mod setup;
+mod update;
 mod window;
 
 use std::path::Path;
@@ -102,6 +103,9 @@ pub fn run() {
         .manage(KeyLock(Mutex::new(())))
         .manage(agent::Desk::default())
         .setup(|app| {
+            // Before the window is up, which asks at once whether the app
+            // can update itself.
+            update::setup(app)?;
             if let Some(main) = app.get_webview_window("main") {
                 window::open(&main);
             }
@@ -134,7 +138,10 @@ pub fn run() {
             setup::protect_key,
             setup::change_key_pin,
             setup::unblock_key_pin,
-            setup::reset_key
+            setup::reset_key,
+            update::update_status,
+            update::check_for_update,
+            update::install_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

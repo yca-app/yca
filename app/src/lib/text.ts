@@ -643,6 +643,44 @@ export const t = {
     "root.crl.pem": "The revocation list of the root CA, in PEM form.",
     "root.crl": "The same in DER form, for devices that want that.",
   } as Record<string, string>,
+  // A newer version of the app itself. Only a released app says any of
+  // this: one built from source does not look.
+  update: {
+    // Version numbers are never part of a sentence here: they stand beside
+    // it as tags, the one that is running and the one that is offered with
+    // an arrow between them.
+    versions: (from: string, to: string) => `From version ${from} to version ${to}`,
+    // The line in the window once a newer version was found, and the word
+    // on the button that opens the dialog about it.
+    available: "A new version is available",
+    open: "Update…",
+    notNow: "Not now",
+    // The line after the app has started anew as the new version; its
+    // number follows as a tag.
+    updated: "CA for YubiKey was updated to version",
+    dismiss: "Dismiss",
+    title: "Software update",
+    checking: "Looking for a new version…",
+    // Followed by the tag of the version that is running.
+    upToDate: "You have the latest version",
+    found: "A new version of CA for YubiKey is available.",
+    released: (date: string) => `Released on ${date}`,
+    // Said under what changed, before anything is downloaded.
+    about:
+      "It is downloaded from GitHub and checked against the key built into this app before it takes its place. Your workspace and your YubiKeys are not touched.",
+    install: "Install and restart",
+    later: "Later",
+    close: "Close",
+    tryAgain: "Try again",
+    downloading: (percent: number | null) =>
+      percent === null ? "Downloading…" : `Downloading… ${percent}%`,
+    installing: "Installing. The app starts again in a moment.",
+    couldNotCheck: "Cannot check for a new version.",
+    couldNotInstall: "The new version could not be installed. The app is as it was.",
+    // The one setting: whether the app looks by itself.
+    auto: "Look for a new version when the app starts",
+    autoHint: "At most once a day. It asks GitHub for the latest release.",
+  },
   failure: {
     wrongPin: (left: number) =>
       left === 1 ? "Wrong PIN. 1 attempt left." : `Wrong PIN. ${left} attempts left.`,

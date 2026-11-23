@@ -1,6 +1,6 @@
 # Releasing
 
-How a release of CA for YubiKey is made. GitHub builds it, in the workflow [Release](.github/workflows/release.yml), from a commit on `main`, when a maintainer starts that workflow. The workflow signs the app with a Developer ID certificate and has Apple notarise it; both take secrets that are handed to that workflow alone, and only when it runs from `main`. Nothing becomes public by itself: the workflow leaves a draft, a person tries what was built, and publishes it.
+How a release of CA for YubiKey is made. GitHub builds it, in the workflow [Release](.github/workflows/release.yml), from a commit on `main`, when a maintainer starts that workflow. The workflow signs the app with a Developer ID certificate, has Apple notarise it, and signs what an installed app updates itself from; all three take secrets that are handed to that workflow alone, and only when it runs from `main`. Nothing becomes public by itself: the workflow leaves a draft, a person tries what was built, and publishes it.
 
 A release is one disk image with the app in it. The app is built for Macs with Apple silicon, signed with a Developer ID, notarised by Apple, and carries the `yca` command, the licence and the notices of the software it is built from.
 
@@ -29,11 +29,23 @@ Once, on GitHub, by an owner of the repository:
    gh secret set APPLE_API_KEY_P8 --env release < AuthKey_….p8
    ```
 
-4. **Private vulnerability reporting** switched on for the repository, which [SECURITY.md](SECURITY.md) sends people to.
+4. **The key that updates are signed with,** as two secrets. An installed app updates itself only to what is signed with this key, whose public half is built into every release. It is made once, with a password of its own:
+
+   ```sh
+   npm --prefix app run tauri signer generate -- -w updater.key
+   gh secret set TAURI_SIGNING_PRIVATE_KEY --env release < updater.key
+   gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --env release
+   ```
+
+   The file `updater.key.pub` that is written next to it goes into the repository as `app/src-tauri/updater.pub`. What becomes of `updater.key` afterwards is for whoever made it to decide: kept somewhere safe with its password, it is a copy for the day the secret is gone; deleted, the secret is the only one there is.
+
+5. **Private vulnerability reporting** switched on for the repository, which [SECURITY.md](SECURITY.md) sends people to.
 
 A secret can be replaced but not read back, by anybody. The workflow keeps the name the certificate is in, which every copy of the app shows anyway, out of its log.
 
-Whoever takes the project over puts a certificate and a key of their own into these secrets. Nothing else has to change, but the app is then signed in their name.
+Whoever takes the project over puts a certificate and a notarisation key of their own into the secrets for them, and the app is then signed in their name. The update key stays as it is: the apps that are installed know no other.
+
+If the update key is lost, the apps that are installed can no longer update themselves. The next release is then built with a new key, and has to be downloaded by hand once by everybody. To change a key that is still there, one release has to be signed with the old key while it is built with the public half of the new one; the script has no way to do that yet.
 
 ## Every release
 
@@ -67,13 +79,16 @@ Start the workflow: on the Actions page of the repository (Release, Run workflow
 gh workflow run release.yml --ref main
 ```
 
-It runs `scripts/release.sh` on a fresh copy of the commit, with nothing taken from a cache. The script refuses to start if the two versions differ, the changelog has no dated entry, the working tree has changes, or the signing identity or the notarisation credentials are missing. Then it builds the `yca` command, writes the third-party notices, builds, signs and notarises the app, and checks the result: that the app carries the command in the right version, the licence and the notices, that every program in it is built for Apple silicon and nothing else, that the signature holds all the way down, and that the app and the disk image both have Apple's ticket attached and pass Gatekeeper.
+It runs `scripts/release.sh` on a fresh copy of the commit, with nothing taken from a cache. The script refuses to start if the two versions differ, the changelog has no dated entry, the working tree has changes, or the signing identity or the notarisation credentials are missing. Then it builds the `yca` command, writes the third-party notices, builds, signs and notarises the app, and checks the result: that the app carries the command in the right version, the licence and the notices, that every program in it is built for Apple silicon and nothing else, that the signature holds all the way down, that the app and the disk image both have Apple's ticket attached and pass Gatekeeper, and that the archive for updates holds that same finished app and is signed with the update key, for this version.
 
-What it leaves is a draft release named after the version, which only maintainers see. Its text is the changelog entry followed by the SHA-256 of the disk image, and it has three files:
+What it leaves is a draft release named after the version, which only maintainers see. Its text is the changelog entry followed by the SHA-256 of the disk image, and it has six files:
 
 - `CA-for-YubiKey-<version>.dmg`, the disk image,
 - `CA-for-YubiKey-<version>.dmg.sha256`, its checksum,
-- `THIRD-PARTY-NOTICES.txt`.
+- `THIRD-PARTY-NOTICES.txt`,
+- `CA-for-YubiKey-<version>.app.tar.gz`, the app in an archive, which an installed app downloads to update itself,
+- `CA-for-YubiKey-<version>.app.tar.gz.sig`, the signature of that archive,
+- `latest.json`, which an installed app asks for when it looks for a newer version: the version, what changed, and where the archive is.
 
 No tag exists yet. The workflow also refuses to build a version that is published already.
 
@@ -111,6 +126,8 @@ gh release edit v1.0.1 --draft=false --latest
 
 Published without the tag pushed first, the release gets a tag from GitHub, on the same commit but without a message.
 
+From that moment the apps that are installed find the new version. Try it at once: open the release before this one, choose Check for Updates… in its menu, and let it install. It has to start again as the new version and say so. If it does not, the archive or `latest.json` of the release is at fault and can be put right there, without a new version.
+
 Afterwards, see that the README tells people where to download it and no longer says what has not been tried.
 
 ## Building a release on a Mac
@@ -130,9 +147,11 @@ export APPLE_SIGNING_IDENTITY="Developer ID Application: Name (TEAMID)"
 export APPLE_API_ISSUER="…"
 export APPLE_API_KEY="…"
 export APPLE_API_KEY_PATH="$HOME/.config/yca/AuthKey_….p8"
+export TAURI_SIGNING_PRIVATE_KEY="$HOME/.config/yca/updater.key"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="…"
 ```
 
-With an Apple ID and an app-specific password in place of the key for App Store Connect, it sets `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` instead of the three `APPLE_API_` lines. On an Intel Mac the Rust has to be one from rustup, found first, with the target added (`rustup target add aarch64-apple-darwin`).
+With an Apple ID and an app-specific password in place of the key for App Store Connect, it sets `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` instead of the three `APPLE_API_` lines. The last two lines are the update key, which a Mac has only if a copy of it was kept: without it the script does not build a release, because the apps that are installed could not update themselves to it. On an Intel Mac the Rust has to be one from rustup, found first, with the target added (`rustup target add aarch64-apple-darwin`).
 
 The files of the release are left in `target/release-files` and its text in `target/release-parts/release-notes.md`, as the workflow attaches them.
 

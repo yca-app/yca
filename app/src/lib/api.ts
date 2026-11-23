@@ -311,6 +311,34 @@ export type Failure =
   | { kind: "interrupted"; message: string; notTouched: boolean }
   | { kind: "other"; message: string };
 
+/** What the app says about updating itself before it is asked to look. */
+export interface UpdateStatus {
+  /** This app can look for a newer version and install it. A released one
+   *  can; one built from source cannot, and makes no connection at all. */
+  available: boolean;
+  /** The version that is running. */
+  version: string;
+}
+
+/** A newer version than the one that is running. */
+export interface NewVersion {
+  version: string;
+  /** What changed, as its release says it: its entry in the changelog. */
+  notes: string | null;
+  /** When it was released. */
+  date: string | null;
+}
+
+/** How far a new version has come. */
+export interface UpdateProgress {
+  /** Bytes that are here. */
+  downloaded: number;
+  /** Bytes in all, if the server said. */
+  total: number | null;
+  /** All of it is here and checked, and is being put in place. */
+  installing: boolean;
+}
+
 /** Whether this is the real app rather than a browser preview. */
 export const inApp = "__TAURI_INTERNALS__" in window;
 
@@ -583,6 +611,42 @@ export const api = {
     const picked = await open({ directory: true, multiple: false });
     return typeof picked === "string" ? picked : null;
   },
+  /** Whether this app can update itself, and the version that is running. */
+  updateStatus: (): Promise<UpdateStatus> =>
+    inApp ? invoke("update_status") : sample.updateStatus(),
+  /**
+   * Asks where the releases are published whether there is a newer
+   * version. One request; nothing is downloaded and nothing changes.
+   * Rejects with words when the question could not be asked.
+   */
+  checkForUpdate: (): Promise<NewVersion | null> =>
+    inApp ? invoke("check_for_update") : sample.checkForUpdate(),
+  /**
+   * Downloads the version that was found, checks its signature, puts it
+   * in place of the app and starts it anew. `version` is the one the
+   * person was shown. Does not resolve when it works, because the app is
+   * gone by then; rejects with words when it does not.
+   */
+  installUpdate: async (
+    version: string,
+    onProgress: (progress: UpdateProgress) => void,
+  ): Promise<void> => {
+    if (!inApp) return sample.installUpdate(version, onProgress);
+    const stopListening = await listen<UpdateProgress>("yca://update-progress", (event) =>
+      onProgress(event.payload),
+    );
+    try {
+      await invoke("install_update", { version });
+    } finally {
+      stopListening();
+    }
+  },
+  /**
+   * Has `handler` called whenever "Check for Updates…" is chosen in the
+   * app's menu. Resolves to what stops that.
+   */
+  onCheckForUpdates: (handler: () => void): Promise<() => void> =>
+    inApp ? listen("yca://check-for-updates", () => handler()) : sample.updateAsked(handler),
 };
 
 // ---------------------------------------------------------------------------
@@ -729,6 +793,29 @@ const sampleKey = (
     matchesWorkspace: previewHasPki ? true : null,
   },
 });
+
+// The preview is an app built from source, which has no updater, unless the
+// address says otherwise: `?update=1.0.2` gives it one, and a newer version
+// of that number to find; `?update=none` one that finds nothing newer,
+// `?update=offline` one that cannot ask, and `?update=broken` one whose
+// download does not pass its check. With `&check` added, "Check for
+// Updates…" is chosen in the menu a moment after the page is up.
+const previewUpdate = new URLSearchParams(window.location.search).get("update");
+// The version the preview runs: after it has "installed" one, that one.
+const PREVIEW_VERSION = "yca.previewVersion";
+const previewVersion = () => sessionStorage.getItem(PREVIEW_VERSION) ?? "1.0.1";
+// What changed, as a release says it: its entry in the changelog.
+const previewNotes = [
+  "### Changed",
+  "",
+  "- **The touch for a new issuing CA is asked for plainly.** The root CA signs a new issuing CA, so it is the root's YubiKey that has to be touched, not the one that is being written to.",
+  "- **A new CA no longer starts out with a warning about revocation lists.** It now says so only of an issuing CA that took the place of one with a list.",
+  "",
+  "### Fixed",
+  "",
+  "- **A YubiKey pulled out in the middle of the wizard** left its step empty. The step now stays, says which YubiKey to connect, and keeps what was typed.",
+  "- **A CA that was not finished can be started again.** The window and `yca devices` now show such a key for what it is.",
+].join("\n");
 
 const sample = {
   issue: async (request: IssueRequest, onTouch: () => void): Promise<Issued> => {
@@ -900,6 +987,41 @@ const sample = {
   },
   agentAnswer: async (id: string, reply: AgentReply): Promise<void> => {
     console.info("answer to the program", id, JSON.stringify(reply));
+  },
+  updateStatus: async (): Promise<UpdateStatus> => ({
+    available: previewUpdate !== null,
+    version: previewVersion(),
+  }),
+  checkForUpdate: async (): Promise<NewVersion | null> => {
+    await pause(900);
+    if (previewUpdate === "offline") {
+      throw "error sending request for url (https://github.com/yca-app/yca/releases/latest/download/latest.json)";
+    }
+    const version = previewUpdate === "broken" ? "1.0.2" : previewUpdate;
+    if (version === null || version === "none" || version === previewVersion()) return null;
+    return { version, notes: previewNotes, date: fromNow(-2) };
+  },
+  installUpdate: async (
+    version: string,
+    onProgress: (progress: UpdateProgress) => void,
+  ): Promise<void> => {
+    const total = 7_400_000;
+    for (let part = 1; part <= 12; part += 1) {
+      await pause(180);
+      onProgress({ downloaded: Math.round((total * part) / 12), total, installing: false });
+    }
+    if (previewUpdate === "broken") throw "signature verification failed";
+    onProgress({ downloaded: total, total, installing: true });
+    await pause(1200);
+    // The app starts anew, as the version it has just installed.
+    sessionStorage.setItem(PREVIEW_VERSION, version);
+    window.location.reload();
+    await new Promise(() => {});
+  },
+  updateAsked: async (handler: () => void): Promise<() => void> => {
+    if (!new URLSearchParams(window.location.search).has("check")) return () => {};
+    const timer = window.setTimeout(handler, 800);
+    return () => window.clearTimeout(timer);
   },
   signRequest: async (request: SignRequest, onTouch: () => void): Promise<Issued> => {
     await pretendKey(request.pin, onTouch);

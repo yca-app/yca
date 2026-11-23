@@ -4,6 +4,10 @@ What changed in each release, written for the people who use the app. The format
 
 ## 1.0.1 (not yet released)
 
+### Added
+
+- **The app updates itself.** It looks for a newer release when it starts, at most once a day, and says so in its window. Nothing is downloaded until you say so: Update… shows what changed, and Install and restart downloads the new version, checks its signature and puts it in place of the old one. Check for Updates… is in the app's menu, and the dialog has the switch that stops the app from looking by itself. This is the first version that can do it, so it has to be installed over 1.0.0 by hand once more.
+
 ### Changed
 
 - **The touch for a new issuing CA is asked for plainly.** The root CA signs a new issuing CA, so it is the root's YubiKey that has to be touched, not the one that is being written to. The wizard now says so as a heading at the moment that YubiKey starts to blink, shows only its serial number, and names it if the touch did not come. The `yca init-issuing` command says it at the same moment.

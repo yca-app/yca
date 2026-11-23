@@ -1,18 +1,18 @@
 name: Release
 
 # Builds what a release hands out and leaves it on GitHub as a draft: the
-# disk image with the signed and notarised app, a file with its SHA-256 and
-# the notices of the software in it. RELEASING.md says what comes before
-# and after.
+# disk image with the signed and notarised app, a file with its SHA-256,
+# the notices of the software in it, and what the release before needs to
+# update itself to this one. RELEASING.md says what comes before and after.
 #
 # It is started by hand, from the Actions page or with `gh workflow run`,
 # and builds main and nothing else. Nothing becomes public here: a person
 # tries what was built, and then publishes the draft.
 #
 # This is the one workflow that is given secrets: the Developer ID
-# certificate the app is signed with, and the key that asks Apple to
-# notarise it. They are kept in the environment "release", which GitHub
-# hands to runs from main only.
+# certificate the app is signed with, the key that asks Apple to notarise
+# it, and the key that updates are signed with. They are kept in the
+# environment "release", which GitHub hands to runs from main only.
 
 on:
   workflow_dispatch:
@@ -161,6 +161,10 @@ jobs:
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          # The key that the archive an installed app updates itself from
+          # is signed with. The script refuses to go on without it.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # The window of the disk image is laid out as it is on a Mac with
           # somebody at it, which the bundler leaves out when it runs
           # unattended.

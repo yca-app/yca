@@ -23,6 +23,7 @@ import { RepackageDialog } from "@/components/RepackageDialog";
 import { SetupWizard } from "@/components/SetupWizard";
 import { SigningDialog, type Progress, type Task } from "@/components/SigningDialog";
 import { TrustDialog } from "@/components/TrustDialog";
+import { useUpdates } from "@/components/Updates";
 import { KeyItems, Sidebar } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import {
@@ -377,7 +378,7 @@ export default function App() {
   // comes up that nobody waits for.
   const waiting = useRef<AgentRequest[]>([]);
   const resting = signing && progress === "done" && !justDone;
-  const occupied =
+  const elsewhere =
     (signing && !resting) ||
     creating ||
     adding ||
@@ -386,6 +387,16 @@ export default function App() {
     movingOpen ||
     repackOpen ||
     trusting;
+  // A newer version of the app: the line that says there is one, and the
+  // dialog that installs it. That dialog is something the person is in
+  // the middle of like any other, and waits its turn like any other.
+  const updates = useUpdates({
+    occupied: elsewhere,
+    makeRoom: () => {
+      if (resting) setSigning(false);
+    },
+  });
+  const occupied = elsewhere || updates.open;
   // The functions below are kept in refs: the listener is set up once and
   // has to meet the window as it is now, also after it has waited for
   // something. `seen` is the window as of the last time it was drawn.
@@ -602,7 +613,9 @@ export default function App() {
             setKeyAsked({ device, task });
             setKeyOpen(true);
           }}
+          notice={updates.notice}
         />
+        {updates.dialog}
         {/* A YubiKey's PIN and its reset need no workspace: a key is
             often reset precisely in order to start one. */}
         <KeyDialog
@@ -728,6 +741,7 @@ export default function App() {
         {/* Below the toolbar the window reads like a page: the filters,
             then the list in a card of its own, with room around it. */}
         <div className="relative flex min-h-0 flex-1 flex-col gap-3 px-6 py-4">
+          {updates.notice}
           {listNotices(pki).map((notice) => (
             <div
               key={notice.role}
@@ -905,6 +919,7 @@ export default function App() {
         onDone={() => void refreshDevices()}
       />
       <ConfirmDialog open={confirming} onOpenChange={setConfirming} asked={asked} onDone={setPki} />
+      {updates.dialog}
     </div>
   );
 }
@@ -1112,9 +1127,13 @@ function Welcome({
   onStartFromKeys,
   onCreate,
   onKeyTask,
+  notice,
 }: {
   devices: Devices | null;
   error: string | null;
+  /** Something the app has to say about itself, such as that a newer
+   *  version is out. Said last, under what the screen is for. */
+  notice?: React.ReactNode;
   onOpen: () => void;
   /** Changes a connected YubiKey's PIN, unblocks it or resets the key. */
   onKeyTask: (device: Device, task: KeyTask) => void;
@@ -1267,6 +1286,7 @@ function Welcome({
             {error}
           </p>
         )}
+        {notice && <div className="mt-6 w-full">{notice}</div>}
       </div>
     </div>
   );

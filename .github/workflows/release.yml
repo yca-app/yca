@@ -105,6 +105,8 @@ jobs:
         with:
           name: built
           path: target/release-built
+          # The second job has a day to start, which matters where a
+          # person has to let it: after that, the run is started anew.
           retention-days: 1
           if-no-files-found: error
           # A run that is started once more hands over what it built then.
@@ -130,18 +132,23 @@ jobs:
         with:
           node-version: 24
 
-      # Of everything the lock file names, only the bundler is ever started
-      # on this machine, and no package runs a script of its own while it
-      # is put in place. The bundler asks cargo how the workspace is laid
-      # out, and that is all Rust is for here: the one that comes with the
-      # machine will do, and nothing is compiled.
-      - name: The bundler
+      # Of everything the app is built from, the bundler alone comes to
+      # this machine: the Tauri CLI and the program for this kind of Mac
+      # that belongs to it, fetched as the app's lock file names them and
+      # held against its checksums. Nothing else is installed, so no
+      # package can stand in for the bundler, or for a command the bundler
+      # starts. The bundler asks cargo how the workspace is laid out, and
+      # that is all Rust is for here: the one that comes with the machine
+      # will do, and nothing is compiled.
+      - name: The bundler, and nothing else
         run: |
           cargo --version
-          npm --prefix app ci --ignore-scripts
+          bundler=$(node scripts/bundler-alone.mjs "$RUNNER_TEMP/bundler")
+          echo "YCA_BUNDLER=$bundler" >>"$GITHUB_ENV"
 
-      # Three files: the app's program, the `yca` command and the notices.
-      # The script takes them by name and starts none of them.
+      # The app's program, the `yca` command, the notices, and a note of
+      # the commit they were built from. The script takes them by name and
+      # starts none of them.
       - name: What was built
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

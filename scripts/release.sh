@@ -98,6 +98,22 @@ parts="$root/target/release-parts"
 out="$root/target/$target/release/bundle"
 files="$root/target/release-files"
 
+# The bundler is the Tauri CLI. The second step starts it as it is, and
+# not through npm: npm puts the commands of every package that is
+# installed in front of the system's own, and `codesign` would be one of
+# them if a package chose to bring it. YCA_BUNDLER names another copy
+# than the app's: on the machine that signs, the workflow fetches the
+# bundler alone, with scripts/bundler-alone.mjs.
+bundler=${YCA_BUNDLER:-$root/app/node_modules/@tauri-apps/cli/tauri.js}
+
+# What is built, in words both steps arrive at by themselves. The first
+# leaves them beside what it built, and the second holds them against its
+# own before it signs anything.
+built_from() {
+    printf 'version %s\ncommit %s\nfor %s\nsigned %s\n' \
+        "$version" "$(git rev-parse HEAD)" "$target" "$signed"
+}
+
 if [ "$steps" != finish ]; then
     # The Rust that is found first has to be able to build for it, which
     # one on an Intel Mac does only with the target added.
@@ -213,8 +229,10 @@ build() {
     [ -f "$program" ] || fail "no app was built at $program"
 
     # What was built is what was meant to be. The command is asked here
-    # and not later: the second step starts nothing that was built.
-    [ "$("$parts/yca-$target" --version)" = "yca $version" ] ||
+    # and not later: the second step starts nothing that was built. It is
+    # a program made of the same packages as the rest, and is given no
+    # secret either.
+    [ "$(without_secrets "$parts/yca-$target" --version)" = "yca $version" ] ||
         fail "the yca command that was built is not $version"
     if [ "$signed" = yes ]; then
         only_for_apple_silicon "$program" "$parts/yca-$target"
@@ -225,9 +243,11 @@ build() {
     cp "$program" "$built/yca-app"
     cp "$parts/yca-$target" "$built/yca"
     cp "$parts/THIRD-PARTY-NOTICES.txt" "$built/THIRD-PARTY-NOTICES.txt"
+    built_from >"$built/built-from.txt"
     echo
     echo "Built, in $built:"
     (cd "$built" && shasum -a 256 yca-app yca THIRD-PARTY-NOTICES.txt | sed 's/^/  /')
+    sed 's/^/  /' "$built/built-from.txt"
 }
 
 # Every program named is for Apple silicon and nothing else.
@@ -241,14 +261,19 @@ only_for_apple_silicon() {
 # The second step: the app, put together from what the first step left,
 # and for a release signed, notarised and packed.
 finish() {
-    # The three files by name, and nothing else that may lie beside them.
-    # They are put where the bundler looks for them. To this step they are
+    # The files by name, and nothing else that may lie beside them. They
+    # are put where the bundler looks for them. To this step they are
     # files to pack and to sign: it starts none of them.
-    for each in yca-app yca THIRD-PARTY-NOTICES.txt; do
+    for each in yca-app yca THIRD-PARTY-NOTICES.txt built-from.txt; do
         if [ ! -f "$built/$each" ] || [ -L "$built/$each" ]; then
             fail "target/release-built has no $each; the first step leaves it there, see RELEASING.md"
         fi
     done
+    # Built from this commit, as this version, for this kind of release:
+    # what an earlier run left, a trial among them, is not signed as it.
+    [ "$(cat "$built/built-from.txt")" = "$(built_from)" ] ||
+        fail "target/release-built was not built from this commit for this kind of release; run the first step again"
+    [ -f "$bundler" ] || fail "no bundler at $bundler; see RELEASING.md"
     mkdir -p "$parts" "$(dirname "$program")"
     cp "$built/yca-app" "$program"
     cp "$built/yca" "$parts/yca-$target"
@@ -263,14 +288,14 @@ finish() {
     # Nothing an earlier run left is taken for what this one makes.
     rm -rf "$out"
     if [ "$signed" = yes ]; then
-        npm --prefix app run tauri bundle -- \
-            --target "$target" --bundles "$bundles" --config "$extra"
+        (cd app && node "$bundler" bundle \
+            --target "$target" --bundles "$bundles" --config "$extra")
         # The update key has signed the archive, and nothing after this
         # needs it.
         unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
     else
-        npm --prefix app run tauri bundle -- \
-            --target "$target" --bundles "$bundles" --config "$extra" --no-sign
+        (cd app && node "$bundler" bundle \
+            --target "$target" --bundles "$bundles" --config "$extra" --no-sign)
     fi
 
     app=$(find "$out/macos" -maxdepth 1 -name "*.app" | head -1)

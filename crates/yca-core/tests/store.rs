@@ -2699,9 +2699,16 @@ fn a_replacement_that_was_stopped_halfway_is_finished_by_doing_it_again() {
 
     // Done again, as the app tells the person to, it finishes: the new CA
     // is in place, and the old one is retired once and can be revoked.
+    // Whoever does it again is told which CA was replaced, although it
+    // was among the replaced ones already.
     fs::remove_dir_all(obstacle).unwrap();
     let mut again = Store::open(&dir).unwrap();
-    again.set_issuing(second.certificate_der(), 2002).unwrap();
+    let shown = again.ca_fingerprints(CaRole::Issuing).unwrap().sha256;
+    let replaced = again
+        .set_issuing_in_place_of(second.certificate_der(), 2002, Some(&shown))
+        .unwrap()
+        .expect("the first issuing CA was replaced");
+    assert_eq!(replaced.subject, "CN=Test Issuing CA");
     assert_eq!(
         again.ca_certificate_der(CaRole::Issuing).unwrap(),
         second.certificate_der()
@@ -2803,4 +2810,73 @@ fn a_first_issuing_ca_is_entered_as_one_only_where_there_is_none() {
         .unwrap();
     assert!(replaced.is_none());
     assert_eq!(store.everyday_ca(), CaRole::Issuing);
+}
+
+#[test]
+fn a_workspace_that_could_not_be_finished_can_be_started_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("pki");
+    let root = Authority::create_root("Test Root CA", key(), now()).unwrap();
+
+    // The very last file cannot be written: everything else is there, the
+    // empty register included, and the folder is no workspace.
+    fs::create_dir_all(&folder).unwrap();
+    let obstacle = in_the_way(&folder.join("ca.toml"));
+    assert!(Store::create(&folder, root.certificate_der(), ROOT_KEY).is_err());
+    assert!(folder.join("index.toml").exists());
+    assert!(!Store::exists(&folder));
+
+    // By then the root CA may be on its YubiKey. Starting the workspace
+    // once more, in the same folder, has to work: an empty register is
+    // nobody's record of anything.
+    fs::remove_dir_all(obstacle).unwrap();
+    assert!(Store::can_start_in(&folder).is_ok());
+    let store = Store::create(&folder, root.certificate_der(), ROOT_KEY).unwrap();
+    assert!(store.records().is_empty());
+    assert_eq!(
+        Store::open(&folder)
+            .unwrap()
+            .ca_certificate_der(CaRole::Root)
+            .unwrap(),
+        root.certificate_der()
+    );
+}
+
+#[test]
+fn whoever_watches_a_workspace_is_told_when_a_change_is_finished() {
+    let mut pki = pki();
+    let at = now();
+    let dir = pki.store.dir().to_owned();
+    let modified = |name: &str| fs::metadata(dir.join(name)).unwrap().modified().unwrap();
+
+    // A revocation list: the list of CAs is written first, the list
+    // itself after it. A window that looked in between has seen the new
+    // number and the old list.
+    let list = pki.issuing.revocation_list(&[], 1, at).unwrap();
+    pki.store.save_crl(CaRole::Issuing, &list).unwrap();
+    assert!(modified("crl/issuing.crl.pem") >= modified("ca.toml"));
+    // What tells it to look again is marked once everything is written.
+    assert!(modified(".lock") >= modified("crl/issuing.crl.pem"));
+
+    // And that mark is part of what a watcher compares.
+    let before = Store::stamp(&dir).unwrap();
+    let lock = fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join(".lock"))
+        .unwrap();
+    lock.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+        .unwrap();
+    assert_ne!(Store::stamp(&dir).unwrap(), before);
+
+    // The proof that a CA key was made inside its YubiKey is written
+    // without touching the register at all, and shows in the window too.
+    let before = Store::stamp(&dir).unwrap();
+    let attestation = Attestation {
+        certificate_der: pki.issuing.certificate_der().to_vec(),
+        intermediate_der: pki.root.certificate_der().to_vec(),
+    };
+    pki.store
+        .save_attestation(CaRole::Issuing, &attestation)
+        .unwrap();
+    assert_ne!(Store::stamp(&dir).unwrap(), before);
 }

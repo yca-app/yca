@@ -189,9 +189,16 @@ export default function App() {
     async (name: string) => {
       const path = await api.pickNewFolder(t.adoptWhere, name);
       if (!path) return;
+      // The window is on its way to this folder from here on. Looking at
+      // the YubiKeys may take a while, and if another workspace is opened
+      // in that time, that one stays.
+      meant.current = path;
       try {
-        adopted(await api.adoptPki(path));
+        const started = await api.adoptPki(path);
+        if (meant.current === path) adopted(started);
       } catch (reason) {
+        if (meant.current !== path) return;
+        meant.current = null;
         setError(`${t.couldNotAdopt}: ${String(reason)}`);
       }
     },
@@ -203,13 +210,17 @@ export default function App() {
   const adoptIssuing = useCallback(
     async (serial: number) => {
       if (!pki) return;
+      const path = pki.path;
       try {
-        adopted(await api.adoptIssuing(pki.path, serial));
+        // The same workspace with an issuing CA, shown if the window is
+        // still on it when the answer comes.
+        showChanged(await api.adoptIssuing(path, serial));
+        if (meant.current === path) setError(null);
       } catch (reason) {
-        setError(String(reason));
+        if (meant.current === path) setError(String(reason));
       }
     },
-    [pki, adopted],
+    [pki, showChanged],
   );
 
   // Which issuing CA belongs is judged against the open PKI's root, so
@@ -231,14 +242,19 @@ export default function App() {
   useEffect(() => {
     const remembered = localStorage.getItem(REMEMBERED_FOLDER);
     if (!remembered) return;
+    meant.current = remembered;
     void api
       .workspaceStamp(remembered)
       .catch(() => undefined)
       .then((stamp) => {
-        if (stamp === null) localStorage.removeItem(REMEMBERED_FOLDER);
-        else void openFolder(remembered);
+        // Unless another folder was opened before the answer came.
+        if (meant.current !== remembered) return;
+        if (stamp === null) {
+          meant.current = null;
+          localStorage.removeItem(REMEMBERED_FOLDER);
+        } else void lookAgain(remembered);
       });
-  }, [openFolder]);
+  }, [lookAgain]);
 
   // Another program may change the workspace: the command line, or an
   // agent working through it. The window asks every second whether anything

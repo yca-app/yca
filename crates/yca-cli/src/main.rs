@@ -1083,6 +1083,12 @@ fn adopt(
             let current = store.ca(CaRole::Issuing).cloned();
             let same = current.is_some()
                 && store.ca_certificate_der(CaRole::Issuing)? == ca.certificate_der;
+            // What is said below is said of the issuing CA the workspace
+            // has at this moment, and done to that one or not at all.
+            let in_place_of = match current {
+                Some(_) => Some(store.ca_fingerprints(CaRole::Issuing)?.sha256),
+                None => None,
+            };
             let known = same
                 && current
                     .as_ref()
@@ -1100,7 +1106,11 @@ fn adopt(
                     device.serial
                 );
             } else {
-                store.set_issuing(&ca.certificate_der, device.serial)?;
+                store.set_issuing_in_place_of(
+                    &ca.certificate_der,
+                    device.serial,
+                    in_place_of.as_deref(),
+                )?;
                 say!(
                     "  issuing CA:  \"{}\" on YubiKey {}",
                     ca.subject,
@@ -1705,6 +1715,16 @@ fn init_issuing(
     {
         bail!("--revoke-old is for replacing an issuing CA, and this workspace has none");
     }
+    // The issuing CA the workspace has now is the one the new CA takes
+    // the place of, and the one --revoke-old means. The PINs and the
+    // touch come before the new one is entered, and another program may
+    // give the workspace a different issuing CA in that time.
+    let in_place_of = match &store {
+        Some(store) if store.ca(CaRole::Issuing).is_some() => {
+            Some(store.ca_fingerprints(CaRole::Issuing)?.sha256)
+        }
+        _ => None,
+    };
 
     let device = target_for_new_ca(&found, serial, "an issuing CA", replace)?;
     say!(
@@ -1746,12 +1766,17 @@ fn init_issuing(
 
     let mut replaced = None;
     if let Some(store) = &mut store {
-        let before = store.retired().len();
-        store.set_issuing(issuing.certificate_der(), serial)?;
+        replaced = store
+            .set_issuing_in_place_of(issuing.certificate_der(), serial, in_place_of.as_deref())
+            .with_context(|| {
+                format!(
+                    "the issuing CA was created on YubiKey {serial}, but was not entered into \
+                     the workspace. `yca adopt` enters an issuing CA from a connected YubiKey"
+                )
+            })?;
         if let Some(attestation) = &attestation {
             store.save_attestation(CaRole::Issuing, attestation)?;
         }
-        replaced = store.retired().get(before).cloned();
         if let (true, Some(old)) = (revoke_old, &replaced) {
             store.revoke_retired(&old.serial, now)?;
         }

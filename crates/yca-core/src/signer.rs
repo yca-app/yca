@@ -54,7 +54,7 @@ impl YubiKeySigner {
             SlotKeyError::Other(e) => e,
         })?;
         // Fail on an unsupported key before spending a PIN attempt.
-        let signer = Self::new(yubikey, pin, key, turn)?;
+        let signer = Self::new(turn, yubikey, pin, key)?;
         signer.with_device(|yubikey| {
             not_the_last_attempt(yubikey)?;
             yubikey.verify_pin(&signer.pin).map_err(device_error)
@@ -65,11 +65,15 @@ impl YubiKeySigner {
     /// Wraps an open YubiKey whose slot 9c holds `key`, and keeps the turn
     /// it was opened in. Does not check the PIN; the caller has, or the
     /// first signature will.
+    ///
+    /// The turn comes first so that it goes last: where this fails, what
+    /// was handed in is let go of in reverse, and the connection has to be
+    /// closed before another program is let at the YubiKeys.
     pub(crate) fn new(
+        turn: Turn,
         yubikey: YubiKey,
         pin: Zeroizing<Vec<u8>>,
         key: SlotKey,
-        turn: Turn,
     ) -> Result<Self, Error> {
         let algorithm = key.signature_algorithm().ok_or_else(|| {
             Error::Device(format!(

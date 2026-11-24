@@ -123,7 +123,19 @@ const LOCK_PATIENCE: Patience = Patience::from_secs(10);
 /// The workspace, held for one change. Let go of when dropped: closing
 /// the file gives up its lock.
 struct Held {
-    _lock: fs::File,
+    lock: fs::File,
+}
+
+impl Drop for Held {
+    /// Marks the moment the change was finished, for [`Store::stamp`].
+    ///
+    /// A change is several files, and whoever watches the workspace may
+    /// look after the first of them is written and before the last. The
+    /// time on the lock file is set when all of them are, so that a look
+    /// that came too early is followed by another.
+    fn drop(&mut self) {
+        let _ = self.lock.set_modified(std::time::SystemTime::now());
+    }
 }
 
 /// The longest name a group of certificates may have, in characters.
@@ -515,12 +527,14 @@ impl Store {
             dir,
         };
         store.write(&ca_file(CaRole::Root), &encode_pem(root_certificate_der))?;
-        store.write_toml(INDEX_FILE, &store.index)?;
         // Not yet marked as a workspace, so reading the root back works
         // off the entry in memory.
         store.root_for_devices()?;
         store.write(README_FILE, README)?;
-        // Written last: its presence is what marks the folder as a PKI.
+        // The register and the list of CAs go last and together. The
+        // list is the very last: its presence is what marks the folder as
+        // a PKI.
+        store.write_toml(INDEX_FILE, &store.index)?;
         store.write_toml(META_FILE, &store.meta)?;
         Ok(store)
     }
@@ -543,8 +557,15 @@ impl Store {
             )));
         }
         // A register without the list of CAs is what is left of a
-        // workspace, and the only record of what it issued.
-        if dir.join(INDEX_FILE).exists() {
+        // workspace, and the only record of what it issued. An empty one
+        // records nothing: it is what a workspace that could not be
+        // finished leaves, and starting again there has to work.
+        let register = dir.join(INDEX_FILE);
+        let nothing_in_it = || {
+            read_toml::<Index>(&register)
+                .is_ok_and(|index| index.certificates.is_empty() && index.revocations.is_empty())
+        };
+        if register.exists() && !nothing_in_it() {
             return Err(Error::Store(format!(
                 "{} holds the register of a workspace but not its list of CAs. A new workspace \
                  here would write an empty register over it; restore the folder from a backup, \
@@ -769,6 +790,9 @@ impl Store {
 
     /// Keeps a YubiKey's proof that the CA key was generated inside it.
     pub fn save_attestation(&self, role: CaRole, attestation: &Attestation) -> Result<(), Error> {
+        // Held like any change, so that whoever watches the workspace
+        // looks again once the proof is on file: the window shows it.
+        let _held = take(&self.dir)?;
         let dir = self.dir.join(ATTESTATION_DIR);
         fs::create_dir_all(&dir).map_err(|e| io_error(&dir, e))?;
         let name = role_name(role);
@@ -1635,6 +1659,15 @@ impl Store {
             let since = written.duration_since(std::time::UNIX_EPOCH).ok()?;
             stamp.push_str(&format!("{}.{}.", since.as_nanos(), file.len()));
         }
+        // And when the last change was finished: a change writes other
+        // files after these two, and a look between them is too early. A
+        // workspace nothing has changed yet has no lock file.
+        let finished = fs::metadata(dir.as_ref().join(LOCK_FILE))
+            .and_then(|lock| lock.modified())
+            .ok()
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |since| since.as_nanos());
+        stamp.push_str(&finished.to_string());
         Some(stamp)
     }
 
@@ -2013,7 +2046,7 @@ fn take(dir: &Path) -> Result<Held, Error> {
     let started = Instant::now();
     loop {
         match lock.try_lock() {
-            Ok(()) => return Ok(Held { _lock: lock }),
+            Ok(()) => return Ok(Held { lock }),
             Err(fs::TryLockError::WouldBlock) if started.elapsed() < LOCK_PATIENCE => {
                 std::thread::sleep(Patience::from_millis(25));
             }

@@ -64,9 +64,11 @@ pub fn adopt_issuing(
         .ca
         .as_ref()
         .expect("select_ca returns a key with a CA");
-    // The store itself checks the signature against its root.
+    // The store itself checks the signature against its root, and once
+    // more, with the folder to itself, that there still is no issuing CA:
+    // the look at the YubiKeys above may have waited for another program.
     store
-        .set_issuing(&ca.certificate_der, device.serial)
+        .set_issuing_in_place_of(&ca.certificate_der, device.serial, None)
         .map_err(|e| e.to_string())?;
     keep_attestation(&store, CaRole::Issuing, device.serial);
     pki_view(&store)
@@ -81,9 +83,10 @@ fn add_connected_issuing(store: &mut Store, found: &Devices) -> bool {
         if ca.role != CaRole::Issuing || !device.describes_its_keys {
             continue;
         }
-        // The store itself checks the signature against its root.
+        // The store itself checks the signature against its root, and
+        // that no other program has given the workspace an issuing CA.
         if store
-            .set_issuing(&ca.certificate_der, device.serial)
+            .set_issuing_in_place_of(&ca.certificate_der, device.serial, None)
             .is_ok()
         {
             keep_attestation(store, CaRole::Issuing, device.serial);

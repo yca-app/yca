@@ -211,7 +211,7 @@ fn new_ca_key(serial: u32, pin: &str, ca: &NewCa<'_>) -> Result<YubiKeySigner, E
         algorithm,
         public_key.subject_public_key.raw_bytes().to_vec(),
     );
-    YubiKeySigner::new(yubikey, pin, key, turn)
+    YubiKeySigner::new(turn, yubikey, pin, key)
 }
 
 /// Stores a CA certificate next to its key and collects the YubiKey's

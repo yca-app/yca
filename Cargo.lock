@@ -6493,7 +6493,7 @@ dependencies = [
 
 [[package]]
 name = "yca-app"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -6510,7 +6510,7 @@ dependencies = [
 
 [[package]]
 name = "yca-cli"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -6525,7 +6525,7 @@ dependencies = [
 
 [[package]]
 name = "yca-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "der",
  "getrandom 0.4.3",

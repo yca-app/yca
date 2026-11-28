@@ -2,7 +2,7 @@
 
 What changed in each release, written for the people who use the app. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 1.0.1 (not yet released)
+## 1.0.1 (2026-11-28)
 
 ### Added
 

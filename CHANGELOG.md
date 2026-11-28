@@ -2,6 +2,10 @@
 
 What changed in each release, written for the people who use the app. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.0.2 (2026-11-28)
+
+The app is the same as in 1.0.1. This release exists so that the update from 1.0.1, the first version that updates itself, can be tried on a real release.
+
 ## 1.0.1 (2026-11-28)
 
 ### Added
